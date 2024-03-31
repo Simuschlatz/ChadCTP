@@ -6,20 +6,23 @@ import torch.nn as nn
 from torch.nn import functional as F
 # --- Hyperparams ---
 batch_size = 32  # how many independent sequences will we process in parallel?
-block_size = 8  # what is the maximum context length for predictions?
-max_iters = 1000
-eval_interval = 300
-learning_rate = 1e-3
+block_size = 128  # what is the maximum context length for predictions?
+max_iters = 300
+eval_interval = 50
+learning_rate = 3e-4
 device = torch.device('mps') or ('cuda' if torch.cuda.is_available() else 'cpu')
 eval_iters = 200
-n_embd = 32
+n_embd = 128
 n_heads = 4
-print(f"{device=}")
+n_blocks = 4
+dropout = 0.2
 # -----------------
 
+print(f"{device=}")
 torch.manual_seed(1337)
 
-# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+
+# https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
@@ -30,14 +33,8 @@ vocab_size = len(chars)
 # "Tokenizer". Simple; pros: small vocab size, cons: long sequences
 stoi = {ch: i for i, ch in enumerate(chars)}
 itos = {i: ch for i, ch in enumerate(chars)}
-def encode(s): return [stoi[ch] for ch in s]
-def decode(l): return [itos[i] for i in l]
-
-
-encoded = encode("HALLO")
-encoded, decode(encoded)
-
-torch.manual_seed(1337)
+encode = lambda s: [stoi[ch] for ch in s]
+decode = lambda l: [itos[i] for i in l]
 
 data = torch.tensor(encode(text), dtype=torch.long)
 n = int(.9*len(data))
@@ -52,7 +49,6 @@ def get_batch(split="train"):
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     x, y, = x.to(device), y.to(device)
     return x, y
-
 
 @torch.no_grad()
 def estimate_loss():
@@ -69,7 +65,6 @@ def estimate_loss():
     return out
 
 
-
 class Head(nn.Module):
 
     def __init__(self, head_size):
@@ -78,6 +73,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones((block_size, block_size))))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, masked=True):
         B, T, C = x.shape
@@ -87,6 +83,7 @@ class Head(nn.Module):
         if masked:
             aff = aff.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         aff = F.softmax(aff, dim=1)
+        aff = self.dropout(aff)
 
         v = self.value(x)
         out = aff @ v
@@ -94,29 +91,55 @@ class Head(nn.Module):
 
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, num_heads, head_size):
+    def __init__(self, n_heads, head_size):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return torch.concat([h(x) for h in self.heads], dim=-1)
+        x = torch.concat([h(x) for h in self.heads], dim=-1)
+        x = self.proj(x)
+        out = self.dropout(x)
+        return out
+
 
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.nnet = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
-            nn.LeakyReLU()
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.GELU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
         )
+
     def forward(self, x):
         return self.nnet(x)
 
-class Bigram(nn.Module):
+
+class Block(nn.Module):
+    def __init__(self, n_heads, n_embd):
+        super().__init__()
+        head_size = n_embd // n_heads
+        self.sa_heads = MultiHeadedAttention(n_heads, head_size) # Get weights accounting for affinities across many features (like grouped convolution)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd) # Normalizes over each token (B * T batches)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa_heads(self.ln1(x)) # Residual connection
+        out = x + self.ffwd(self.ln2(x)) # Layer Norm position has changed since original paper (in Attention Is All You Need, layer norm is before sa and ffwd)
+        return out
+
+
+class DecoderTransformer(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.sa_heads = MultiHeadedAttention(n_heads, n_embd//n_heads) # Get weights accounting fro affinities across many features (like grouped conoplution)
+        self.blocks = nn.Sequential(*[Block(n_heads, n_embd) for _ in range(n_blocks)])
+        self.l_norm = nn.LayerNorm(n_embd)
         self.fc = FeedForward(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
@@ -126,10 +149,11 @@ class Bigram(nn.Module):
         tok_embd = self.token_embedding_table(idx)  # (B, T, C)
         pos_embd = self.position_embedding_table(torch.arange(T, device=device))  # (T, C)
         x = tok_embd + pos_embd
-        x = self.sa_heads(x) # (B, T, C)
+        x = self.blocks(x) # (B, T, C)
+        x = self.l_norm(x)
         x = self.fc(x)
         logits = self.lm_head(x)
-        # print(logits.shape)
+
         if targets is None:
             loss = None
         else:
@@ -153,7 +177,7 @@ class Bigram(nn.Module):
         return idx
 
 
-model = Bigram()
+model = DecoderTransformer()
 model = model.to(device)
 
 optim = torch.optim.AdamW(model.parameters(), lr=learning_rate)
