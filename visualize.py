@@ -39,6 +39,39 @@ def render_volume_slices(volume, cmap='magma', figsize=(12, 12)):
     fig.patch.set_facecolor('black')
     plt.show(block=True)
 
+def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True):
+    t, y, z, x = volume_seq.shape
+    # Reshape the 4D volume sequence into a 3D array
+    volume = volume_seq.reshape((t * y, z, x))
+    
+    # Create the figure and axis
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(bottom=0.25)
+    
+    # Set the title
+    plt.title(title)
+    
+    # Display the initial slice
+    img = ax.imshow(volume[0], cmap='magma')
+    plt.colorbar(img)
+    
+    # Create the slider
+    ax_slider = plt.axes([0.25, 0.1, 0.65, 0.03])
+    slider = Slider(ax_slider, 'Slice', 0, volume.shape[0] - 1, valinit=0, valstep=1)
+    
+    # Update function for the slider
+    def update(val):
+        slice_index = int(slider.val)
+        img.set_data(volume[slice_index])
+        fig.canvas.draw_idle()
+    
+    slider.on_changed(update)
+    
+    if show:
+        plt.show()
+    
+    return fig, ax
+
 def interactive_plot(volume_seq, title="", show=True):
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots()
@@ -79,6 +112,22 @@ def interactive_plot(volume_seq, title="", show=True):
     if show:
         plt.show(block=True)
     return fig, ax
+
+def multiple_interactive_plots(volume_seqs, titles=None, plotting_function=interactive_plot):
+    if titles is None:
+        titles = [f"Volume {i+1}" for i in range(len(volume_seqs))]
+    
+    figures = []
+    for volume_seq, title in zip(volume_seqs, titles):
+        fig, ax = plotting_function(volume_seq, title, show=False)
+        figures.append(fig)
+    
+    plt.show(block=False)
+    
+    input("Press Enter to close all windows...")
+    for fig in figures:
+        plt.close(fig)
+    plt.ioff()  # Turn off interactive mode
 
 def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
     """
@@ -150,22 +199,186 @@ def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
 
     plt.show(block=True)
 
-def multiple_interactive_plots(volume_seqs, titles=None):
-    if titles is None:
-        titles = [f"Volume {i+1}" for i in range(len(volume_seqs))]
-    
-    figures = []
-    for volume_seq, title in zip(volume_seqs, titles):
-        fig, ax = interactive_plot(volume_seq, title, show=False)
-        figures.append(fig)
-    
-    plt.show(block=False)
-    
-    input("Press Enter to close all windows...")
-    for fig in figures:
-        plt.close(fig)
-    plt.ioff()  # Turn off interactive mode
+from preprocessing import get_mask
 
+def interactive_plot_with_threshold(volume_seq, title="", show=True, min_thresh=-40, max_thresh=120, apply_window=True):
+
+    """Like interactive_plot but with additional threshold sliders that show a binary mask"""
+    plt.ion()  # Turn on interactive mode
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
+    plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
+    
+    # Original image on left
+    if apply_window:
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap='magma')
+    else:
+        image = ax1.imshow(volume_seq[0, 0], cmap='magma')
+    ax1.set_title(f"{title} - Original")
+    # plt.colorbar(image, ax=ax1)
+    
+    # Thresholded mask on right
+    mask = ax2.imshow((volume_seq[0, 0] >= min_thresh) & (volume_seq[0, 0] <= max_thresh), cmap='binary')
+    ax2.set_title(f"{title} - Threshold Mask")
+    # Add legend (black = 0, white = 1)
+    # ax2.legend(['0', '1'], loc='upper right')
+
+    # Create sliders
+    ax_slice = plt.axes([0.25, 0.25, 0.5, 0.03])
+    ax_time = plt.axes([0.25, 0.2, 0.5, 0.03])
+    ax_min_thresh = plt.axes([0.25, 0.15, 0.5, 0.03])
+    ax_max_thresh = plt.axes([0.25, 0.1, 0.5, 0.03])
+
+    data_min, data_max = np.min(volume_seq), np.max(volume_seq)
+    
+    time_slider = Slider(ax_time, 'Time', 0, volume_seq.shape[0]-1, valinit=0, valstep=1)
+    slice_slider = Slider(ax_slice, 'Slice', 0, volume_seq.shape[1]-1, valinit=0, valstep=1)
+    min_thresh_slider = Slider(ax_min_thresh, 'Min Threshold', data_min, data_max, valinit=min_thresh)
+    max_thresh_slider = Slider(ax_max_thresh, 'Max Threshold', data_min, data_max, valinit=max_thresh)
+    
+    scrolling_slider = [time_slider]
+
+    def update(val, scrolling_slider=None, slider=None):
+        current_slice = volume_seq[int(time_slider.val), int(slice_slider.val)]
+        if apply_window:
+            image.set_data(np.clip(current_slice, a_min=-40, a_max=120))
+        else:
+            image.set_data(current_slice)
+        # Update threshold mask
+        thresh_mask = (current_slice >= min_thresh_slider.val) & (current_slice <= max_thresh_slider.val)
+        mask.set_data(thresh_mask)
+        
+        
+        fig.canvas.draw_idle()
+        if scrolling_slider is not None and slider is not None:
+            scrolling_slider[0] = slider
+
+    # Connect update function to all sliders
+    time_slider.on_changed(lambda val: update(val, scrolling_slider, time_slider))
+    slice_slider.on_changed(lambda val: update(val, scrolling_slider, slice_slider))
+    min_thresh_slider.on_changed(update)
+    max_thresh_slider.on_changed(update)
+
+    def on_scroll(event):
+        if event.button == 'up':
+            scrolling_slider[0].set_val(min(scrolling_slider[0].val + scrolling_slider[0].valstep, 
+                                          scrolling_slider[0].valmax))
+        elif event.button == 'down':
+            scrolling_slider[0].set_val(max(scrolling_slider[0].val - scrolling_slider[0].valstep, 
+                                          scrolling_slider[0].valmin))
+        
+        fig.canvas.draw_idle()
+
+    def on_motion(event):
+        if event.inaxes in [ax1, ax2]:
+            plt.gcf().canvas.set_cursor(1)
+
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+
+    if show:
+        plt.show(block=True)
+    return fig, (ax1, ax2)
+
+def interactive_plot_with_mask(volume_seq, title="", show=True, initial_min_objects=750, threshold_min=-25, threshold_max=140, apply_window=True):
+    """Like interactive_plot but shows the mask from get_mask with adjustable min_objects parameter"""
+    plt.ion()  # Turn on interactive mode
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 8))
+    plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
+    
+    # Original image on left
+    if apply_window:
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap='magma')
+    else:
+        image = ax1.imshow(volume_seq[0, 0], cmap='magma')
+    ax1.set_title(f"{title} - Original")
+    
+    # Mask in middle
+    mask_img = get_mask(volume_seq[0, 0], 
+                        threshold_min=threshold_min, 
+                        threshold_max=threshold_max, 
+                        remove_small_objects_size=initial_min_objects
+                        )
+    mask_plot = ax2.imshow(mask_img, cmap='binary')
+    ax2.set_title(f"{title} - Brain Mask")
+
+    # Masked image on right
+    masked_img = volume_seq[0, 0] * mask_img
+    if apply_window:
+        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap='magma')
+    else:
+        masked_image = ax3.imshow(masked_img, cmap='magma')
+    ax3.set_title(f"{title} - Masked Brain")
+
+    # Create sliders
+    ax_slice = plt.axes([0.25, 0.2, 0.5, 0.03])
+    ax_time = plt.axes([0.25, 0.17, 0.5, 0.03]) 
+    ax_min_objects = plt.axes([0.25, 0.14, 0.5, 0.03])
+    ax_thresh_min = plt.axes([0.25, 0.11, 0.5, 0.03])
+    ax_thresh_max = plt.axes([0.25, 0.08, 0.5, 0.03])
+    
+    time_slider = Slider(ax_time, 'Time', 0, volume_seq.shape[0]-1, valinit=0, valstep=1)
+    slice_slider = Slider(ax_slice, 'Slice', 0, volume_seq.shape[1]-1, valinit=0, valstep=1)
+    min_objects_slider = Slider(ax_min_objects, 'Min Objects Size', 0, 2000, valinit=initial_min_objects)
+    thresh_min_slider = Slider(ax_thresh_min, 'Threshold Min', -100, 200, valinit=threshold_min, valstep=1)
+    thresh_max_slider = Slider(ax_thresh_max, 'Threshold Max', -100, 400, valinit=threshold_max, valstep=1)
+
+    def update(val):
+        current_slice = volume_seq[int(time_slider.val), int(slice_slider.val)]
+        if apply_window:
+            image.set_data(np.clip(current_slice, a_min=-40, a_max=120))
+        else:
+            image.set_data(current_slice)
+            
+        # Update mask with threshold parameters
+        mask_img = get_mask(current_slice, 
+                          threshold_min=thresh_min_slider.val,
+                          threshold_max=thresh_max_slider.val,
+                          remove_small_objects_size=int(min_objects_slider.val))
+        mask_plot.set_data(mask_img)
+        
+        # Update masked image
+        masked_img = current_slice * mask_img
+        if apply_window:
+            masked_image.set_data(np.clip(masked_img, a_min=-40, a_max=120))
+        else:
+            masked_image.set_data(masked_img)
+        
+        fig.canvas.draw_idle()
+
+    # Connect update function to all sliders
+    time_slider.on_changed(update)
+    slice_slider.on_changed(update)
+    min_objects_slider.on_changed(update)
+    thresh_min_slider.on_changed(update)
+    thresh_max_slider.on_changed(update)
+
+    def on_scroll(event):
+        if event.inaxes == ax_time:
+            slider = time_slider
+        elif event.inaxes == ax_min_objects:
+            slider = min_objects_slider
+        elif event.inaxes == ax_thresh_min:
+            slider = thresh_min_slider
+        elif event.inaxes == ax_thresh_max:
+            slider = thresh_max_slider
+        else:
+            slider = slice_slider
+            
+        if event.button == 'up':
+            slider.set_val(min(slider.val + slider.valstep, slider.valmax))
+        elif event.button == 'down':
+            slider.set_val(max(slider.val - slider.valstep, slider.valmin))
+
+    def on_motion(event):
+        if event.inaxes in [ax1, ax2, ax3]:
+            plt.gcf().canvas.set_cursor(1)
+
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+
+    if show:
+        plt.show(block=True)
+    return fig, (ax1, ax2, ax3)
 
 from matplotlib import animation, rc
 
