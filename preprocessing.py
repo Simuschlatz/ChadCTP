@@ -10,10 +10,42 @@ from numba import jit, prange
 import SimpleITK as sitk
 from concurrent.futures import ThreadPoolExecutor
 from time import time
-# from cv2 import bilateral_filter
-# from pydicom.pixel_data_handlers.util import apply_windowing
 
-# Remove the class definition and convert class variables to module-level constants
+dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
+
+def time_benchmark(func):
+    def wrapper(*args, **kwargs):
+        t0 = time()
+        res = func(*args, **kwargs)
+        name = func.__name__
+        print(f"{name} took {time() - t0} seconds")
+        return res
+    return wrapper
+
+def save_folder_paths(output_file: str='folder_paths.pkl'):
+    folder_paths = []
+    for folder in sorted(os.listdir(dataset_path)):
+        folder_path = os.path.join(dataset_path, folder)
+        if len(folder) == 7 and len(os.listdir(folder_path)) != 288: # MOL-XYZ
+            folder_paths.append(folder_path)
+    ic(len(folder_paths), folder_paths[len(folder_paths)-10:])
+
+    output_file = os.path.join(dataset_path, output_file)
+    with open(output_file, 'wb') as f:
+        pickle.dump(folder_paths, f)
+
+    ic(f"Folder paths saved to {output_file}")
+    return folder_paths
+
+def load_folder_paths(output_file: str='folder_paths_288.pkl'):
+    file_path = os.path.join(dataset_path, output_file)
+    if not os.path.exists(file_path):
+        print(f"File {output_file} does not exist, running save_folder_paths() instead...")
+        return save_folder_paths(output_file=output_file)
+    
+    with open(file_path, 'rb') as f:
+        return pickle.load(f)
+    
 windowing_lookup = {
     "lung": (-600, 1500),
     "mediastinum": (50, 350),
@@ -43,7 +75,7 @@ def normalize(scan):
     return (scan - min_val) / (max_val - min_val)
 
 @jit(nopython=True)
-def apply_windowing(scan, window_center, window_width):
+def apply_window(scan, window_center, window_width):
     img_min = window_center - window_width // 2
     img_max = window_center + window_width // 2
     return np.clip(scan, img_min, img_max)
@@ -80,125 +112,31 @@ def threshold(ct_volume, skull_threshold=700):
 def get_threshold_mask(slice, min_val=-40, max_val=120):
     return (min_val < slice) & (slice < max_val)
 
-def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_idx: int = 0, num_threads: int = 4) -> np.ndarray:
-    """
-    Rigidly registers a sequence of CT volumes to a reference volume.
 
-    This function performs rigid registration (translation and rotation) of each volume in the sequence
-    to a specified reference volume using SimpleITK for efficient computation.
 
-    Parameters:
-    - volume_seq (np.ndarray): 4D array of CT volumes with shape (T, Y, Z, X).
-    - reference_idx (int): Index of the reference volume in the sequence to which all other volumes will be registered.
-    - num_threads (int): Number of threads to use for parallel processing.
-
-    Returns:
-    - np.ndarray: Registered 4D volume sequence with the same shape as input.
-    """
-    def register_volume(target_volume: np.ndarray, reference_volume: np.ndarray) -> np.ndarray:
-        # Convert NumPy arrays to SimpleITK images
-        target_sitk = sitk.GetImageFromArray(target_volume)
-        reference_sitk = sitk.GetImageFromArray(reference_volume)
-
-        # Initialize the transformation
-        initial_transform = sitk.CenteredTransformInitializer(
-            reference_sitk, target_sitk, 
-            sitk.VersorRigid3DTransform(), 
-            sitk.CenteredTransformInitializerFilter.GEOMETRY
-        )
-
-        # Set up the registration method
-        registration_method = sitk.ImageRegistrationMethod()
-        registration_method.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-        registration_method.SetMetricSamplingStrategy(registration_method.RANDOM)
-        registration_method.SetMetricSamplingPercentage(0.01)
-        registration_method.SetInterpolator(sitk.sitkLinear)
-        registration_method.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=100, convergenceMinimumValue=1e-6, convergenceWindowSize=10)
-        registration_method.SetOptimizerScalesFromPhysicalShift()
-        registration_method.SetInitialTransform(initial_transform, inPlace=False)
-        registration_method.SetTransform(sitk.VersorRigid3DTransform())
-
-        # Execute the registration
-        final_transform = registration_method.Execute(reference_sitk, target_sitk)
-
-        # Apply the transformation to the target volume
-        registered_sitk = sitk.Resample(target_sitk, reference_sitk, final_transform, sitk.sitkLinear, 0.0, target_sitk.GetPixelID())
-
-        # Convert back to NumPy array
-        registered_volume = sitk.GetArrayFromImage(registered_sitk)
-        return registered_volume
-
-    reference_volume = volume_seq[reference_idx]
-
-    def process_volume(t):
-        if t == reference_idx:
-            return volume_seq[t]
-        return register_volume(volume_seq[t], reference_volume)
-
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        registered_volumes = list(executor.map(process_volume, range(volume_seq.shape[0])))
-
-    return np.stack(registered_volumes)
-
-def rigid_registration(volume_sequence):
-    """
-    Performs rigid registration on a sequence of CT brain volumes.
-    
-    This function first denoises the volumes and then applies rigid registration
-    to align all volumes in the sequence with the first volume.
-    
-    Parameters:
-    - volume_sequence (numpy.ndarray): 4D array of CT volumes (time, z, y, x)
-    
-    Returns:
-    - numpy.ndarray: Registered 4D volume sequence
-    """
-    from scipy import ndimage
-    from skimage.restoration import denoise_nl_means
-    from skimage.transform import AffineTransform
-    from skimage.registration import optical_flow_tvl1
-    
-    # Denoise each volume in the sequence
-    denoised_sequence = np.zeros_like(volume_sequence)
-    for t in range(volume_sequence.shape[0]):
-        denoised_sequence[t] = denoise_nl_means(volume_sequence[t], h=0.1, fast_mode=True, patch_size=5, patch_distance=6)
-    
-    # Use the first volume as the reference
-    reference = denoised_sequence[0]
-    registered_sequence = np.zeros_like(denoised_sequence)
-    registered_sequence[0] = reference
-    
-    # Perform rigid registration for each subsequent volume
-    for t in range(1, denoised_sequence.shape[0]):
-        # Estimate transformation using optical flow
-        flow = optical_flow_tvl1(reference, denoised_sequence[t])
-        
-        # Convert flow to affine transformation
-        affine = AffineTransform(translation=(-flow[0].mean(), -flow[1].mean()))
-        
-        # Apply transformation
-        registered_sequence[t] = ndimage.affine_transform(denoised_sequence[t], affine.params)
-    
-    return registered_sequence
-
-def get_mask(slice, threshold_min=-25, threshold_max=150, remove_small_objects_size=500):
+def get_2d_mask(slice: np.ndarray, threshold_min=-25, threshold_max=150, 
+                remove_small_objects_size=500, structuring_element_dims=(1, 7)):
     # Apply gaussian blur
     slice = ndimage.gaussian_filter(slice, sigma=1)
     mask = get_threshold_mask(slice, min_val=threshold_min, max_val=threshold_max)
-    mask = ndimage.morphology.binary_erosion(mask, np.ones((5, 5)))
-    mask = ndimage.morphology.binary_erosion(mask, np.ones((3, 3)))
+    mask = ndimage.morphology.binary_erosion(mask, np.ones(structuring_element_dims))
+    # mask = ndimage.morphology.binary_erosion(mask, np.ones((3, 3)))
     # Remove small objects
     mask = morphology.remove_small_objects(mask, remove_small_objects_size)
     # Fill small holes
-    mask = ndimage.morphology.binary_dilation(mask, np.ones((7, 7)))
-    mask = ndimage.morphology.binary_fill_holes(mask)
+    # mask = ndimage.morphology.binary_dilation(mask, np.ones((7, 7)))
+    # mask = ndimage.morphology.binary_fill_holes(mask)
     return mask
 
-def get_largest_connected_component(all_masks):
+def get_largest_connected_component(all_masks, 
+                                    morphology_shape_3d=(3, 3, 3),
+                                    connectivity_shape=(3, 3, 3),
+                                    morphology_shape_2d=(1, 7),
+                                    ):
     # Remove 3d connections between non-brain components (eyes) and brain
-    all_masks = ndimage.binary_erosion(all_masks, structure=np.ones((3, 3, 3)))
+    all_masks = ndimage.binary_erosion(all_masks, structure=np.ones(morphology_shape_3d))
     
-    labels, num_volumes = ndimage.label(all_masks, structure=np.ones((3, 3, 3)))
+    labels, num_volumes = ndimage.label(all_masks, structure=np.ones(connectivity_shape))
     # Largest connected is found in 3d, not 2d. This is because some lower slices of the brain contain multiple
     # unconnected brain components that would be removed if the largest connected component was found in 2d
     label_count = np.bincount(labels.ravel().astype(int))
@@ -206,284 +144,76 @@ def get_largest_connected_component(all_masks):
     # Exclude background
     label_count[0] = 0
     largest_volume_mask = labels == label_count.argmax()
+    for i, slice_mask in enumerate(largest_volume_mask):
+        # Fill small holes, improve mask in 2d
+        slice_mask = ndimage.morphology.binary_dilation(slice_mask, np.ones(morphology_shape_2d))
+        slice_mask = ndimage.morphology.binary_fill_holes(slice_mask)
+        largest_volume_mask[i] = slice_mask
     # Account for 3D erosion
-    largest_volume_mask = ndimage.morphology.binary_dilation(largest_volume_mask, np.ones((3, 3, 3)))
-    # for slice_mask in largest_volume_mask:
-    #     # Fill small holes
-    #     slice_mask = ndimage.morphology.binary_dilation(slice_mask, np.ones((8, 8)))
-    #     slice_mask = ndimage.morphology.binary_fill_holes(slice_mask)
+    largest_volume_mask = ndimage.morphology.binary_dilation(largest_volume_mask, np.ones(connectivity_shape))
+    # for i, slice_mask in enumerate(largest_volume_mask):
+    #     largest_volume_mask[i] = ndimage.morphology.binary_dilation(slice_mask, np.ones((3, 3)))
     return largest_volume_mask
 
-
-def get_3d_mask(volume, threshold_min=-25, threshold_max=150, remove_small_objects_size=500):
+@time_benchmark
+def get_3d_mask(volume: np.ndarray, 
+                threshold_min=-25, threshold_max=150, 
+                remove_small_objects_size=500, 
+                morphology_shape_2d=(1, 7),
+                morphology_shape_3d=(3, 3, 3),
+                connectivity_shape_3d=(3, 3, 3)
+                ):
     """
-    Generate a 3D mask by applying thresholding, erosion, dilation, and selecting the largest connected component.
-
     Parameters:
     - volume (numpy.ndarray): The 3D input volume to mask.
     - threshold_min (int, optional): Minimum intensity value for thresholding. Defaults to -25.
     - threshold_max (int, optional): Maximum intensity value for thresholding. Defaults to 150.
     - remove_small_objects_size (int, optional): Minimum size of objects to keep. Defaults to 500.
+    - morphology_shape_2d (tuple, optional): Shape of the structuring element for 2D morphology. Defaults to (1, 7).
+    - morphology_shape_3d (tuple, optional): Shape of the structuring element for 3D morphology. Defaults to (3, 3, 3).
+    - connectivity_shape_3d (tuple, optional): Shape of the structuring element for 3D connectivity. Defaults to (3, 3, 3).
 
     Returns:
-    - numpy.ndarray: A binary mask of the largest continuous volume.
+    - numpy.ndarray: A 3D binary mask of the brain.
     """
-    # Apply Gaussian blur to smooth the volume
-    volume_blurred = ndimage.gaussian_filter(volume, sigma=1)
-    
-    # Apply thresholding to create a binary mask
-    mask = get_threshold_mask(volume_blurred, min_val=threshold_min, max_val=threshold_max)
-    
-    mask = ndimage.binary_erosion(mask, structure=np.ones((5, 5, 5)))
-    mask = ndimage.binary_erosion(mask, structure=np.ones((3, 3, 3)))
-    
-    # Remove small objects from the mask
-    for i in range(len(mask)):
-        mask[i] = morphology.remove_small_objects(mask[i], remove_small_objects_size)
-    
-    # Perform binary dilation to fill small holes
-    mask = ndimage.binary_dilation(mask, structure=np.ones((8, 8, 8)))
-    for i in range(len(mask)):
-        mask[i] = ndimage.binary_fill_holes(mask[i])
-    
-    # Label connected components in the mask
-    labels, num_volumes = ndimage.label(mask, structure=np.ones((3, 3, 3)))
-    
-    # Count the number of voxels in each labeled component
-    label_counts = np.bincount(labels.ravel())
-    label_counts[0] = 0  # Exclude the background
-    
-    if label_counts.size == 0:
-        raise ValueError("No objects found in the mask.")
-    
-    # Identify the label of the largest connected component
-    largest_label = label_counts.argmax()
-    
-    # Create a mask for the largest connected component
-    largest_volume_mask = labels == largest_label
-    
-    return largest_volume_mask
-
-def skull_strip(slice):
-    mask = get_mask(slice)
-    objects = label(mask)
-    slice = (slice + 1024) * mask - 1024
-    # slice = apply_windowing(slice, 40, 80)
-    return slice
-    mask = get_brain_mask(slice)
-    return slice * mask
+    downsampling_factor = 512 // volume.shape[1]
+    if not morphology_shape_2d[1] // downsampling_factor:
+        print(f"Warning: Heavy downsampling detected ({downsampling_factor}x), morphology shape will be set to (1, 1)")
+        morphology_shape_2d = (1, 1)
+    elif downsampling_factor > 1:
+        morphology_shape_2d = (1, max(2, morphology_shape_2d[1] // downsampling_factor))
+        print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting morphology_shape_2d from {morphology_shape_2d} to {(1, max(2, morphology_shape_2d[1] // downsampling_factor))}")
+        print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting remove_small_objects_size from {remove_small_objects_size} to {remove_small_objects_size // downsampling_factor**2}")
+        remove_small_objects_size = remove_small_objects_size // downsampling_factor**2
+    volume_mask = np.array([get_2d_mask(s, 
+                                        threshold_min=threshold_min, threshold_max=threshold_max, 
+                                        remove_small_objects_size=remove_small_objects_size, 
+                                        structuring_element_dims=morphology_shape_2d) 
+                            for s in volume])
+    return get_largest_connected_component(volume_mask, 
+                                           morphology_shape_3d=morphology_shape_3d,
+                                           connectivity_shape=connectivity_shape_3d,
+                                           morphology_shape_2d=morphology_shape_2d
+                                           )
+@jit(nopython=True)
+def apply_mask(a: np.ndarray, mask: np.ndarray):
+    return (a + 1024) * mask - 1024
 
 @jit(nopython=True)
-def genCont(image, cont):
-    """Function to create image contour from coordinates"""
-    cont_imag = np.zeros_like(image)
-    for ii in range(len(cont)):
-        cont_imag[cont[ii,0],cont[ii,1]] = 1
-    return cont_imag
-
-
-def skull_strip_mask(cls, image: np.ndarray, bone_hu=110, ct_inf=-110, ct_sup=120):
+def downsample(image: np.ndarray, factor=4):
     """
-    Creates a skull-stripping mask for CT images.
-
-    This function generates a binary mask to separate the brain tissue from the skull
-    and other non-brain structures in CT images. It uses a combination of thresholding,
-    morphological operations, and contour analysis to identify and isolate the brain region.
-
-    Parameters:
-    - image (numpy.ndarray): The input CT image.
-    - bone_hu (int): The Hounsfield Unit threshold for bone, default is 110.
-    - ct_inf (int): The lower Hounsfield Unit threshold for brain tissue, default is -110.
-    - ct_sup (int): The upper Hounsfield Unit threshold for brain tissue, default is 120.
-
-    Returns:
-    - tuple: A tuple containing:
-        - mask (numpy.ndarray): The binary skull-stripping mask.
-        - use_Tmax (int): Flag indicating if an inner portion of the brain is present (1) or not (0).
-
-    Note:
-    This method assumes that the input image is a 2D slice from a CT volume.
-    The resulting mask can be applied to the original image to remove non-brain structures.
+    Downsamples an image by a given factor
     """
-    img_max = np.max(image)
-    # Selecting areas with certain
-    image_mask = np.zeros_like(image).astype(int)
-    image_mask[(bone_hu < image) & (image < img_max)] = 1
-    # Removing objects with area smaller than a certain values
-    image_mask_clean = morphology.remove_small_objects(image_mask.astype(bool), 1500)
-
-    # Improving skull definition
-    labels, label_nb = ndimage.label(image_mask_clean)
-    se = morphology.disk(10)
-    close_small_bin = morphology.closing(labels, se)
-    # Finding contours of the various areas
-    contours = find_contours(close_small_bin,0)
-
-    # Creating masks of the various rounded areas
-    areas = []
-    masks = []
-    for contour in contours:
-        cont = cls.genCont(image_mask_clean,np.array(contour,dtype=int)).astype(int)
-        mask = morphology.dilation(cont, np.ones((2, 2)))
-        mask = ndimage.morphology.binary_fill_holes(mask)
-        mask = morphology.dilation(mask, np.ones((3, 3)))
-        masks.append(mask.copy())
-        # Computing areas to find correct inner portion
-        areas.append(np.sum(mask.ravel()))
-
-    #use_Tmax = flag to check if an inner portion of the brain is present in the current section
-    if len(areas) == 1:
-        # If only one contour is found, there is no inner portion
-        mask = masks[0].astype(np.float32)
-        # use_Tmax = 0
-    elif len(areas) > 1:
-        # If two or more contours have been found, take the second-largest one as inner portion
-        sort_idx = np.argsort(areas)
-        mask = masks[sort_idx[1]].astype(np.float32)
-        # use_Tmax = 1
-
-        # Improving skull definition
-        maskedImg = image * mask
-        image_mask = np.zeros_like(maskedImg).astype(int)
-        image_mask[(ct_inf < maskedImg) & (maskedImg < ct_sup)] = 1
-        # Removing objects with area smaller than a certain values
-        image_mask_clean = morphology.remove_small_objects(image_mask.astype(bool), 3000)
-
-        # Improving skull definition again
-        labels, label_nb = ndimage.label(image_mask_clean)
-        se = morphology.disk(2)
-        close_small_bin = morphology.closing(labels, se)
-        if close_small_bin.max() == 2:
-            image_mask = np.zeros_like(maskedImg).astype(int)
-            image_mask[close_small_bin == 2] = 1
-            image_mask_clean = morphology.remove_small_objects(image_mask.astype(bool), 6000)
-            mask = ndimage.morphology.binary_fill_holes(image_mask_clean)
-            maskedImg = image * mask
-    else:
-        # No areas have been found
-        mask = np.zeros_like(image_mask_clean, dtype=np.float32)
-        use_Tmax = 0
-    return mask#, use_Tmax
-
-@jit(nopython=True)
-def downsample(volume_seq: np.ndarray, factor=4):
-    """
-    Downsamples a """
-    return volume_seq[::factor, ::factor]
-
-def get_volume(folder_path, windowing=True, extract_brain=True, spatial_downsampling_factor=4, temporal_downsampling_factor=1) -> np.ndarray:
-    datasets = load_dcm_datasets(folder_path)
-    
-    if temporal_downsampling_factor < 1:
-        print("Warning: temporal downsampling factor is less than 1, setting to 1")
-        temporal_downsampling_factor = 1
-    if spatial_downsampling_factor < 1:
-        print("Warning: spatial downsampling factor is less than 1, setting to 1")
-        spatial_downsampling_factor = 1
-
-    # Process the DICOM files
-    # Each file contains the entire perfusion volume sequence as DICOM datasets
-    # The objective is to convert the sequence into a 4D array of CT volumes that are
-    # in HU, windowed, brain-extracted, normalized, registered and filtered
-
-    ds = datasets[0]
-    # print(ds)
-    # Assume that each volume in the sequence has the same dimensions
-    Y = int((datasets[-1].SliceLocation - datasets[0].SliceLocation + 5) // ds.SliceThickness) # Height
-    Z, X = ds.Rows // spatial_downsampling_factor, ds.Columns // spatial_downsampling_factor # Depth, Width
-    n_volumes = len(datasets) // Y
-    T = n_volumes // temporal_downsampling_factor # Temporal dimension
-    volume_seq = np.empty((T, Y, Z, X), dtype=np.float32)
-
-    for t in range(T):
-        for y in range(Y):
-            slice = datasets[t * Y * temporal_downsampling_factor + y].pixel_array
-            if spatial_downsampling_factor > 1:
-                slice = downsample(slice, factor=spatial_downsampling_factor)
-            slice = convert_to_HU(slice, *get_conversion_params(ds))
-            slice = bilateral_filter(slice, 2.5, 10)
-            volume_seq[t, y] = slice
-
-    # volume_seq = rigid_registration(volume_seq)
-
-    if extract_brain:
-        volume = volume_seq[0]
-        # volume_mask = get_3d_mask(volume)
-        volume_mask = np.array([get_mask(s) for s in volume])
-        volume_mask = get_largest_connected_component(volume_mask)
-        for v in range(T):
-            volume_seq[v] = (volume_seq[v] + 1024) * volume_mask - 1024
-    if windowing:
-        window_center, window_width = get_window_from_type('brain')
-        ic(window_center, window_width)
-        volume_seq = apply_windowing(volume_seq, window_center, window_width)
-
-    return volume_seq
-    # 4. Standardization
-    return (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
-    # Normalization
-    # return normalize(volume_seq)
-
-def save_volume(volume, folder_path='volume.npy'):
-    np.save(folder_path, volume)
-    ic(f"Volume saved to {folder_path}")
-
-@jit(nopython=True, parallel=True)
-def bilateral_3d_filter(volume_seq, sigma_space, sigma_intensity):
-    def gaussian(x_square, sigma):
-        return np.exp(-0.5 * x_square / sigma**2)
-    
-    time, depth, height, width = volume_seq.shape
-    result = np.zeros_like(volume_seq)
-    
-    print("Pre-computing spatial kernel...")
-    # Pre-compute spatial kernel
-    kernel_size = int(2 * sigma_space + 1)
-    spatial_kernel = np.zeros((kernel_size, kernel_size, kernel_size))
-    for z in range(kernel_size):
-        for y in range(kernel_size):
-            for x in range(kernel_size):
-                spatial_kernel[z, y, x] = gaussian(
-                    (z - kernel_size // 2)**2 + 
-                    (y - kernel_size // 2)**2 + 
-                    (x - kernel_size // 2)**2, 
-                    sigma_space
-                )
-    
-    print("Applying bilateral filter...")
-    for t in prange(time):
-        for k in range(depth):
-            for i in range(height):
-                print(f"Processing slice {i} of {height} of time {t}")
-                for j in range(width):
-                    total_weight = 0
-                    filtered_value = 0
-                    
-                    for z in range(max(0, k - kernel_size // 2), min(depth, k + kernel_size // 2 + 1)):
-                        for y in range(max(0, i - kernel_size // 2), min(height, i + kernel_size // 2 + 1)):
-                            for x in range(max(0, j - kernel_size // 2), min(width, j + kernel_size // 2 + 1)):
-                                spatial_weight = spatial_kernel[
-                                    z - (k - kernel_size // 2),
-                                    y - (i - kernel_size // 2),
-                                    x - (j - kernel_size // 2)
-                                ]
-                                intensity_diff = volume_seq[t, k, i, j] - volume_seq[t, z, y, x]
-                                intensity_weight = gaussian(intensity_diff**2, sigma_intensity)
-                                weight = spatial_weight * intensity_weight
-                                
-                                filtered_value += weight * volume_seq[t, z, y, x]
-                                total_weight += weight
-                    
-                    result[t, k, i, j] = filtered_value / total_weight
-    
-    return result
+    return image[::factor, ::factor]
 
 @jit(nopython=True)
 def gaussian(x_square, sigma):
     return np.exp(-0.5*x_square/sigma**2)
 
 def bilateral_filter(image, sigma_space, sigma_intensity):
-
+    """
+    Vectorized bilateral filter implementation.
+    """
     # kernel_size should be twice the sigma space to avoid calculating negligible values
     kernel_size = int(2*sigma_space)
     half_kernel_size = kernel_size // 2
@@ -523,28 +253,228 @@ def filter_volume_seq(volume_seq, sigma_space, sigma_intensity):
     print(f"Average time taken per slice: {total_time / (len(volume_seq) * len(volume_seq[0])):.2f} seconds")
     # return volume_seq
 
-dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
-
-def save_folder_paths(output_file: str='folder_paths.pkl'):
-    folder_paths = []
-    for folder in sorted(os.listdir(dataset_path)):
-        folder_path = os.path.join(dataset_path, folder)
-        if len(folder) == 7 and len(os.listdir(folder_path)) != 288: # MOL-XYZ
-            folder_paths.append(folder_path)
-    ic(len(folder_paths), folder_paths[len(folder_paths)-10:])
-
-    output_file = os.path.join(dataset_path, output_file)
-    with open(output_file, 'wb') as f:
-        pickle.dump(folder_paths, f)
-
-    ic(f"Folder paths saved to {output_file}")
-    return folder_paths
-
-def load_folder_paths(output_file: str='folder_paths_288.pkl'):
-    file_path = os.path.join(dataset_path, output_file)
-    if not os.path.exists(file_path):
-        print(f"File {output_file} does not exist, running save_folder_paths() instead...")
-        return save_folder_paths(output_file=output_file)
+def get_skull_mask(volume: np.ndarray, threshold: int = 700) -> np.ndarray:
+    """
+    Creates a binary mask of the skull using thresholding and morphological operations.
     
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)
+    Parameters:
+    - volume (np.ndarray): Input CT volume in Hounsfield units
+    - threshold (int): HU threshold for skull segmentation (typically ~700 HU)
+    
+    Returns:
+    - np.ndarray: Binary mask of the skull
+    """
+    # Create initial skull mask
+    skull_mask = volume > threshold
+    
+    # Perform erosion followed by dilation (opening operation)
+    # This helps remove small noise while preserving skull structure
+    struct_element = np.ones((3, 3, 3))
+    skull_mask = ndimage.binary_erosion(skull_mask, structure=struct_element)
+    skull_mask = ndimage.binary_dilation(skull_mask, structure=struct_element)
+    
+    return skull_mask
+
+@time_benchmark
+def register_volume(target_volume: np.ndarray, reference_image: sitk.Image) -> np.ndarray:
+    """
+    Registers a single volume to the reference image using rigid registration.
+    Uses smoothed volumes for registration but applies transformation to original volume.
+    """
+    # Create smoothed versions for registration
+    smoothed_target = ndimage.gaussian_filter(target_volume, sigma=1.0)  # Reduced sigma
+    smoothed_reference = ndimage.gaussian_filter(
+        sitk.GetArrayFromImage(reference_image), 
+        sigma=1.0
+    )
+    
+    # Convert to SimpleITK images and set physical spacing
+    target_image = sitk.GetImageFromArray(smoothed_target)
+    target_image.SetSpacing([1.0, 1.0, 1.0])
+    reference_image.SetSpacing([1.0, 1.0, 1.0])
+    
+    # Create skull masks using smoothed volumes
+    target_skull_mask = get_skull_mask(smoothed_target)
+    reference_skull_mask = get_skull_mask(smoothed_reference)
+    
+    # Convert masked smoothed volumes to SimpleITK images
+    target_skull_image = sitk.GetImageFromArray(smoothed_target * target_skull_mask)
+    reference_skull_image = sitk.GetImageFromArray(smoothed_reference * reference_skull_mask)
+    
+    # Set physical properties for registration
+    target_skull_image.SetSpacing([1.0, 1.0, 1.0])
+    reference_skull_image.SetSpacing([1.0, 1.0, 1.0])
+    
+    # Initialize the transform with center of rotation at image center
+    initial_transform = sitk.CenteredTransformInitializer(
+        reference_skull_image, 
+        target_skull_image,
+        sitk.Euler3DTransform(),
+        sitk.CenteredTransformInitializerFilter.GEOMETRY
+    )
+
+    # Set up the registration method with more conservative parameters
+    registration_method = sitk.ImageRegistrationMethod()
+    registration_method.SetMetricAsMeanSquares()
+    registration_method.SetOptimizerAsRegularStepGradientDescent(
+        learningRate=0.1,        # Increased learning rate
+        minStep=1e-4,
+        numberOfIterations=200,  # Reduced iterations
+        gradientMagnitudeTolerance=1e-8
+    )
+    registration_method.SetInitialTransform(initial_transform)
+    registration_method.SetInterpolator(sitk.sitkLinear)
+    
+    # Add optimizer observer to prevent large transformations
+    def command_iteration(method):
+        if method.GetOptimizerIteration() == 0:
+            print(f"Starting registration...")
+        if method.GetOptimizerIteration() % 50 == 0:
+            print(f"{method.GetOptimizerIteration()}: {method.GetMetricValue()}")
+            # Get current transform parameters
+            transform = method.GetOptimizerPosition()
+            # Check for unreasonable transformations (e.g., large rotations)
+            if any(abs(angle) > np.pi/4 for angle in transform[:3]):  # limit rotations to 45 degrees
+                print("Warning: Large rotation detected")
+                method.StopOptimization()
+    
+    registration_method.AddCommand(sitk.sitkIterationEvent, lambda: command_iteration(registration_method))
+
+    # Execute the registration using smoothed skull masks
+    try:
+        final_transform = registration_method.Execute(reference_skull_image, target_skull_image)
+    except RuntimeError as e:
+        print(f"Registration failed: {e}")
+        return target_volume  # Return original volume if registration fails
+    
+    # Apply the transform to the original unsmoothed target image
+    original_target_image = sitk.GetImageFromArray(target_volume)
+    original_target_image.SetSpacing([1.0, 1.0, 1.0])
+    
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetReferenceImage(reference_image)
+    resampler.SetTransform(final_transform)
+    resampler.SetInterpolator(sitk.sitkLinear)
+    resampler.SetDefaultPixelValue(-1024)  # Standard air HU value
+    
+    try:
+        registered_image = resampler.Execute(original_target_image)
+        registered_volume = sitk.GetArrayFromImage(registered_image)
+        
+        # Verify the registration result
+        if np.sum(registered_volume > -1000) < 0.5 * np.sum(target_volume > -1000):
+            print("Warning: Registration may have failed (large portion of volume missing)")
+            return target_volume
+            
+        ic(f"Volume registered with final metric value: {registration_method.GetMetricValue()}")
+        return registered_volume
+    except RuntimeError as e:
+        print(f"Resampling failed: {e}")
+        return target_volume
+
+def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int = 1) -> np.ndarray:
+    """
+    Performs skull-based rigid registration on a sequence of volumes using the specified reference volume.
+
+    Parameters:
+    - volume_seq (np.ndarray): 4D array of shape (T, Y, Z, X) representing the volume sequence.
+    - reference_index (int): Index of the reference volume in the sequence to which other volumes will be registered.
+
+    Returns:
+    - np.ndarray: 4D array of registered volumes with the same shape as the input.
+    """
+    if not (0 <= reference_index < volume_seq.shape[0]):
+        raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
+
+    reference_volume = volume_seq[reference_index]
+    reference_image = sitk.GetImageFromArray(reference_volume)
+    reference_image.SetSpacing([1.0, 1.0, 1.0])
+
+    print(f"Starting skull-based rigid registration of {volume_seq.shape[0]} volumes to reference index {reference_index}")
+
+    # Initialize the output array
+    registered_seq = np.empty_like(volume_seq)
+    registered_seq[reference_index] = volume_seq[reference_index]
+
+    # Register each volume sequentially
+    for i in range(volume_seq.shape[0]):
+        if i != reference_index:
+            ic(f"Registering volume {i}")
+            registered_seq[i] = register_volume(volume_seq[i], reference_image)
+
+    print("All registrations completed.")
+    ic(registered_seq.shape, registered_seq.dtype)
+    return registered_seq
+
+def get_volume(folder_path, 
+               windowing=True, 
+               windowing_type='brain',
+               extract_brain=True, 
+               correct_motion=True,
+               spatial_downsampling_factor=4, 
+               temporal_downsampling_factor=1) -> np.ndarray:
+    
+    print(f"Loading {folder_path}...")
+    datasets = load_dcm_datasets(folder_path)
+    
+    if temporal_downsampling_factor < 1:
+        print("Warning: temporal downsampling factor is less than 1, setting to 1")
+        temporal_downsampling_factor = 1
+    if spatial_downsampling_factor < 1:
+        print("Warning: spatial downsampling factor is less than 1, setting to 1")
+        spatial_downsampling_factor = 1
+
+    # Process the DICOM files
+    # Each file contains the entire perfusion volume sequence as DICOM datasets
+    # The objective is to convert the sequence into a 4D array of CT volumes that are
+    # in HU, windowed, brain-extracted, normalized, registered and filtered
+    print(f"Processing {folder_path}...")
+    ds = datasets[0]
+    # print(ds)
+    # Assume that each volume in the sequence has the same dimensions
+    Y = int((datasets[-1].SliceLocation - datasets[0].SliceLocation + 5) // ds.SliceThickness) # Height
+    Z, X = ds.Rows // spatial_downsampling_factor, ds.Columns // spatial_downsampling_factor # Depth, Width
+    n_volumes = len(datasets) // Y
+    T = n_volumes // temporal_downsampling_factor # Temporal dimension
+    volume_seq = np.empty((T, Y, Z, X), dtype=np.float32)
+
+    for t in range(T):
+        for y in range(Y):
+            slice = datasets[t * Y * temporal_downsampling_factor + y].pixel_array
+            slice = convert_to_HU(slice, *get_conversion_params(ds))
+            # slice = bilateral_filter(slice, 10, 10)
+            if spatial_downsampling_factor > 1:
+                slice = downsample(slice, factor=spatial_downsampling_factor)
+            volume_seq[t, y] = slice
+
+    if correct_motion:
+        volume_seq = rigid_register_volume_sequence(volume_seq)
+        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
+    # Brain extraction parameters tuned for volume seq with slice size 512x512
+    # So downsample after brain extraction
+
+
+    if extract_brain:
+        volume = volume_seq[0]
+        volume_mask = get_3d_mask(volume)
+        # All unmasked areas are set to -1024 HU
+        volume_seq = apply_mask(volume_seq, volume_mask)
+        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
+    
+            
+    if windowing:
+        window_center, window_width = get_window_from_type(windowing_type)
+        ic(window_center, window_width)
+        volume_seq = apply_window(volume_seq, window_center, window_width)
+        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
+
+    print(f"Done!")
+    return volume_seq
+    # 4. Standardization
+    return (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
+    # Normalization
+    # return normalize(volume_seq)
+
+def save_volume(volume, folder_path='volume.npy'):
+    np.save(folder_path, volume)
+    ic(f"Volume saved to {folder_path}")
