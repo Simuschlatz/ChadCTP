@@ -18,26 +18,26 @@ if __name__ == "__main__":
     # v_raw = DataTransformer.bilateral_filter(v_raw[len(v_raw) // 2:len(v_raw) // 2 + 1, :2], 10, 1)
     # interactive_plot(v_raw, title="Raw")
     import matplotlib.pyplot as plt
-    for folder_path in folder_paths[12:]: # [os.path.join(dataset_path, 'MOL-120')]:
+    for folder_path in folder_paths[11:]: # [os.path.join(dataset_path, 'MOL-120')]:
 
         volume_seq = get_volume(folder_path, 
                                 extract_brain=False,
-                                windowing=True,
-                                correct_motion=True,
-                                spatial_downsampling_factor=1, 
-                                temporal_downsampling_factor=4)
-        volume_seq2 = get_volume(folder_path + '_Registered_Filtered_3mm_20HU', 
-                                extract_brain=False,
-                                windowing=True,
+                                windowing=False,
                                 correct_motion=False,
-                                spatial_downsampling_factor=1, 
-                                temporal_downsampling_factor=4)
-        multi_vol_seq_iplot([volume_seq, volume_seq2], ['Mine', 'UniToBrain Team'])
+                                spatial_downsampling_factor=2, 
+                                temporal_downsampling_factor=7)
+        # volume_seq2 = get_volume(folder_path + '_Registered_Filtered_3mm_20HU', 
+        #                         extract_brain=True,
+        #                         windowing=True,
+        #                         correct_motion=False,
+        #                         spatial_downsampling_factor=1, 
+        #                         temporal_downsampling_factor=4)
+        # multi_vol_seq_iplot([volume_seq, volume_seq2], ['Mine', 'UniToBrain Team'])
         # multi_vol_seq_iplot([volume_seq, volume_seq2], ['Extracted Brain', 'All Volume'])
         # print(volume_seq.shape)
         # interactive_plot(volume_seq)
         # interactive_plot_with_threshold(volume_seq, title=folder_path.split('/')[-1])
-        # interactive_plot_with_3d_mask(volume_seq[3:], title=folder_path.split('/')[-1], apply_window=True, threshold_max=225)
+        interactive_plot_with_3d_mask(volume_seq, title=folder_path.split('/')[-1], apply_window=True, threshold_max=225)
     # v = DataTransformer.get_volume(folder_path, spatial_downsampling_factor=4)
     # scroll_through_all_slices(v_registered, title=folder_path.split('/')[-1])
 

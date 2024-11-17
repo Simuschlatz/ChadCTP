@@ -22,26 +22,33 @@ def time_benchmark(func):
         return res
     return wrapper
 
-def save_folder_paths(output_file: str='folder_paths.pkl'):
+def save_folder_paths(num_slices: int=288, output_file: str='folder_paths.pkl'):
     folder_paths = []
     for folder in sorted(os.listdir(dataset_path)):
         folder_path = os.path.join(dataset_path, folder)
-        if len(folder) == 7 and len(os.listdir(folder_path)) != 288: # MOL-XYZ
+        if len(folder) == 7 and len(os.listdir(folder_path)) == num_slices: # MOL-XYZ
             folder_paths.append(folder_path)
-    ic(len(folder_paths), folder_paths[len(folder_paths)-10:])
+    print(f"{len(folder_paths)} folders found")
 
     output_file = os.path.join(dataset_path, output_file)
     with open(output_file, 'wb') as f:
         pickle.dump(folder_paths, f)
 
-    ic(f"Folder paths saved to {output_file}")
+    print(f"Folder paths saved to {output_file}")
     return folder_paths
 
-def load_folder_paths(output_file: str='folder_paths_288.pkl'):
+def load_folder_paths(scan_size='small'):
+    """
+    ``scan_size``: 'small' or 'large'. If 'small', only load folders with 288 slices 
+    (18 volumes with 16 slices each). If 'large' only load folders with 712 slices 
+    (89 volumes with 8 slices each).
+    """
+    num_slices = 288 if scan_size == 'small' else 712
+    output_file = f"folder_paths_{num_slices}.pkl"
     file_path = os.path.join(dataset_path, output_file)
     if not os.path.exists(file_path):
         print(f"File {output_file} does not exist, running save_folder_paths() instead...")
-        return save_folder_paths(output_file=output_file)
+        return save_folder_paths(num_slices=num_slices, output_file=output_file)
     
     with open(file_path, 'rb') as f:
         return pickle.load(f)
@@ -55,15 +62,14 @@ windowing_lookup = {
 }
 
 def load_dcm_datasets(folder_path: str) -> list:
-    if folder_path.endswith('.npy'):
-        return np.load(folder_path)
-    try:
-        files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.dcm')])
-        ic(f"Dicom files loaded, count: {len(files)}")
-
-        return [dcmread(f) for f in files] # Pydicom datasets
-    except FileNotFoundError:
+    # Check if folder exists
+    if not os.path.exists(folder_path):
         raise FileNotFoundError(f"Folder {folder_path} not found")
+    
+    files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.dcm')])
+    print(f"Dicom files loaded, count: {len(files)}")
+
+    return [dcmread(f) for f in files] # Pydicom datasets
 
 @jit(nopython=True)
 def convert_to_HU(slice, intercept, slope):
@@ -442,9 +448,9 @@ def get_volume(folder_path,
         for y in range(Y):
             slice = datasets[t * Y * temporal_downsampling_factor + y].pixel_array
             slice = convert_to_HU(slice, *get_conversion_params(ds))
-            # slice = bilateral_filter(slice, 10, 10)
             if spatial_downsampling_factor > 1:
                 slice = downsample(slice, factor=spatial_downsampling_factor)
+            # slice = bilateral_filter(slice, 10, 10)
             volume_seq[t, y] = slice
 
     if correct_motion:
