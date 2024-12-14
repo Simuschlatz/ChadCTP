@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from time import time
 
 dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
-
+num_samples = 10
 def time_benchmark(func):
     def wrapper(*args, **kwargs):
         t0 = time()
@@ -122,6 +122,10 @@ def get_threshold_mask(slice, min_val=-40, max_val=120):
 
 def get_2d_mask(slice: np.ndarray, threshold_min=-25, threshold_max=150, 
                 remove_small_objects_size=500, structuring_element_dims=(1, 7)):
+    """
+    Performs brain extraction on a 2D slice using thresholding, morphological operations, 
+    and connected component analysis.
+    """
     # Apply gaussian blur
     slice = ndimage.gaussian_filter(slice, sigma=1)
     mask = get_threshold_mask(slice, min_val=threshold_min, max_val=threshold_max)
@@ -139,6 +143,14 @@ def get_largest_connected_component(all_masks,
                                     connectivity_shape=(3, 3, 3),
                                     morphology_shape_2d=(1, 7),
                                     ):
+    """
+    Finds the largest connected component in a 3D volume using 3D connectivity analysis.
+    2D and 3D morphological operations and as well as connected component analysis are performed to 
+    improve the mask quality.
+
+    Returns:
+    - numpy.ndarray: A 3D binary mask of the largest connected component, ideally the brain.
+    """
     # Remove 3d connections between non-brain components (eyes) and brain
     all_masks = ndimage.binary_erosion(all_masks, structure=np.ones(morphology_shape_3d))
     
@@ -150,19 +162,19 @@ def get_largest_connected_component(all_masks,
     # Exclude background
     label_count[0] = 0
     largest_volume_mask = labels == label_count.argmax()
+    # Account for 3D erosion
+    largest_volume_mask = ndimage.morphology.binary_dilation(largest_volume_mask, np.ones(connectivity_shape))
     for i, slice_mask in enumerate(largest_volume_mask):
         # Fill small holes, improve mask in 2d
         slice_mask = ndimage.morphology.binary_dilation(slice_mask, np.ones(morphology_shape_2d))
         slice_mask = ndimage.morphology.binary_fill_holes(slice_mask)
         largest_volume_mask[i] = slice_mask
-    # Account for 3D erosion
-    largest_volume_mask = ndimage.morphology.binary_dilation(largest_volume_mask, np.ones(connectivity_shape))
     # for i, slice_mask in enumerate(largest_volume_mask):
     #     largest_volume_mask[i] = ndimage.morphology.binary_dilation(slice_mask, np.ones((3, 3)))
     return largest_volume_mask
 
 @time_benchmark
-def get_3d_mask(volume: np.ndarray, 
+def get_3d_mask(volume: np.ndarray,
                 threshold_min=-25, threshold_max=150, 
                 remove_small_objects_size=500, 
                 morphology_shape_2d=(1, 7),
@@ -170,27 +182,33 @@ def get_3d_mask(volume: np.ndarray,
                 connectivity_shape_3d=(3, 3, 3)
                 ):
     """
+    Performs brain extraction on a 3D volume using thresholding, 2D and 3D morphological operations, 
+    and 2D and 3D connected component analysis.
+
     Parameters:
-    - volume (numpy.ndarray): The 3D input volume to mask.
-    - threshold_min (int, optional): Minimum intensity value for thresholding. Defaults to -25.
-    - threshold_max (int, optional): Maximum intensity value for thresholding. Defaults to 150.
-    - remove_small_objects_size (int, optional): Minimum size of objects to keep. Defaults to 500.
-    - morphology_shape_2d (tuple, optional): Shape of the structuring element for 2D morphology. Defaults to (1, 7).
-    - morphology_shape_3d (tuple, optional): Shape of the structuring element for 3D morphology. Defaults to (3, 3, 3).
-    - connectivity_shape_3d (tuple, optional): Shape of the structuring element for 3D connectivity. Defaults to (3, 3, 3).
+    - `volume` (numpy.ndarray): The 3D input volume to mask.
+    - `threshold_min` (int, optional): Minimum intensity value for thresholding. Defaults to -25.
+    - `threshold_max` (int, optional): Maximum intensity value for thresholding. Defaults to 150.
+    - `remove_small_objects_size` (int, optional): Minimum size of objects to keep. Defaults to 500.
+    - `morphology_shape_2d` (tuple, optional): Shape of the structuring element for 2D morphology. Defaults to (1, 7).
+    - `morphology_shape_3d` (tuple, optional): Shape of the structuring element for 3D morphology. Defaults to (3, 3, 3).
+    - `connectivity_shape_3d` (tuple, optional): Shape of the structuring element for 3D connectivity. Defaults to (3, 3, 3).
 
     Returns:
     - numpy.ndarray: A 3D binary mask of the brain.
     """
     downsampling_factor = 512 // volume.shape[1]
+
     if not morphology_shape_2d[1] // downsampling_factor:
         print(f"Warning: Heavy downsampling detected ({downsampling_factor}x), morphology shape will be set to (1, 1)")
         morphology_shape_2d = (1, 1)
+
     elif downsampling_factor > 1:
         morphology_shape_2d = (1, max(2, morphology_shape_2d[1] // downsampling_factor))
         print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting morphology_shape_2d from {morphology_shape_2d} to {(1, max(2, morphology_shape_2d[1] // downsampling_factor))}")
         print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting remove_small_objects_size from {remove_small_objects_size} to {remove_small_objects_size // downsampling_factor**2}")
         remove_small_objects_size = remove_small_objects_size // downsampling_factor**2
+
     volume_mask = np.array([get_2d_mask(s, 
                                         threshold_min=threshold_min, threshold_max=threshold_max, 
                                         remove_small_objects_size=remove_small_objects_size, 
@@ -343,7 +361,7 @@ def register_volume(target_volume: np.ndarray, reference_image: sitk.Image) -> n
             if any(abs(angle) > np.pi/4 for angle in transform[:3]):  # limit rotations to 45 degrees
                 print("Warning: Large rotation detected")
                 method.StopOptimization()
-    
+                
     registration_method.AddCommand(sitk.sitkIterationEvent, lambda: command_iteration(registration_method))
 
     # Execute the registration using smoothed skull masks
@@ -373,12 +391,12 @@ def register_volume(target_volume: np.ndarray, reference_image: sitk.Image) -> n
             return target_volume
             
         ic(f"Volume registered with final metric value: {registration_method.GetMetricValue()}")
-        return registered_volume
+        return registered_volume#, registration_method.GetMetricValue()
     except RuntimeError as e:
         print(f"Resampling failed: {e}")
         return target_volume
 
-def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int = 1) -> np.ndarray:
+def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int = 1, window_center: int = 40, window_width: int = 400) -> np.ndarray:
     """
     Performs skull-based rigid registration on a sequence of volumes using the specified reference volume.
 
@@ -392,6 +410,8 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int 
     if not (0 <= reference_index < volume_seq.shape[0]):
         raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
 
+    # Window the sequence
+    volume_seq = apply_window(volume_seq, window_center, window_width)
     reference_volume = volume_seq[reference_index]
     reference_image = sitk.GetImageFromArray(reference_volume)
     reference_image.SetSpacing([1.0, 1.0, 1.0])
@@ -404,9 +424,9 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int 
 
     # Register each volume sequentially
     for i in range(volume_seq.shape[0]):
-        if i != reference_index:
-            ic(f"Registering volume {i}")
-            registered_seq[i] = register_volume(volume_seq[i], reference_image)
+        if i == reference_index: continue
+        ic(f"Registering volume {i}")
+        registered_seq[i] = register_volume(volume_seq[i], reference_image)
 
     print("All registrations completed.")
     ic(registered_seq.shape, registered_seq.dtype)
@@ -417,31 +437,41 @@ def get_volume(folder_path,
                windowing_type='brain',
                extract_brain=True, 
                correct_motion=True,
+               reference_index=1,
                spatial_downsampling_factor=4, 
-               temporal_downsampling_factor=1) -> np.ndarray:
-    
-    print(f"Loading {folder_path}...")
+               temporal_downsampling_factor=1,
+               verbose=True) -> np.ndarray:
+    """
+    Processes the DICOM files in a folder with folder path `folder_path`.
+    Each folder contains the entire perfusion volume sequence as DICOM datasets
+    The objective is to convert the sequence into a 4D array of CT volumes that are
+    in HU, windowed, brain-extracted, registered, filtered, standardized
+
+    Parameters:
+    - `extract_brain` (bool, optional): Whether to extract the brain from the volume sequence. Defaults to True.
+    - `correct_motion` (bool, optional): Whether to correct motion in the volume sequence. Defaults to True.
+    - `reference_index` (int, optional): Index of the reference volume in the sequence to which other volumes will be registered. Defaults to 1.
+    - `spatial_downsampling_factor` (int, optional): Factor by which to downsample the volume sequence in the spatial dimensions. Defaults to 4.
+    - `temporal_downsampling_factor` (int, optional): Factor by which to downsample the volume sequence in the temporal dimension. Defaults to 1.
+    """
+    if verbose: print(f"Loading {folder_path}...")
     datasets = load_dcm_datasets(folder_path)
     
     if temporal_downsampling_factor < 1:
-        print("Warning: temporal downsampling factor is less than 1, setting to 1")
+        if verbose: print("Warning: temporal downsampling factor is less than 1, setting to 1")
         temporal_downsampling_factor = 1
     if spatial_downsampling_factor < 1:
-        print("Warning: spatial downsampling factor is less than 1, setting to 1")
+        if verbose: print("Warning: spatial downsampling factor is less than 1, setting to 1")
         spatial_downsampling_factor = 1
 
-    # Process the DICOM files
-    # Each file contains the entire perfusion volume sequence as DICOM datasets
-    # The objective is to convert the sequence into a 4D array of CT volumes that are
-    # in HU, windowed, brain-extracted, normalized, registered and filtered
-    print(f"Processing {folder_path}...")
+    if verbose: print(f"Processing {folder_path}...")
     ds = datasets[0]
     # print(ds)
     # Assume that each volume in the sequence has the same dimensions
     Y = int((datasets[-1].SliceLocation - datasets[0].SliceLocation + 5) // ds.SliceThickness) # Height
     Z, X = ds.Rows // spatial_downsampling_factor, ds.Columns // spatial_downsampling_factor # Depth, Width
     n_volumes = len(datasets) // Y
-    T = n_volumes // temporal_downsampling_factor # Temporal dimension
+    T = max(1, n_volumes // temporal_downsampling_factor) # Temporal dimension
     volume_seq = np.empty((T, Y, Z, X), dtype=np.float32)
 
     for t in range(T):
@@ -450,31 +480,28 @@ def get_volume(folder_path,
             slice = convert_to_HU(slice, *get_conversion_params(ds))
             if spatial_downsampling_factor > 1:
                 slice = downsample(slice, factor=spatial_downsampling_factor)
-            # slice = bilateral_filter(slice, 10, 10)
+            slice = bilateral_filter(slice, 10, 10)
             volume_seq[t, y] = slice
 
     if correct_motion:
-        volume_seq = rigid_register_volume_sequence(volume_seq)
-        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
-    # Brain extraction parameters tuned for volume seq with slice size 512x512
-    # So downsample after brain extraction
-
+        volume_seq = rigid_register_volume_sequence(volume_seq, reference_index=reference_index)
+        if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
     if extract_brain:
         volume = volume_seq[0]
         volume_mask = get_3d_mask(volume)
         # All unmasked areas are set to -1024 HU
         volume_seq = apply_mask(volume_seq, volume_mask)
-        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
+        if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
     
-            
+
     if windowing:
         window_center, window_width = get_window_from_type(windowing_type)
         ic(window_center, window_width)
         volume_seq = apply_window(volume_seq, window_center, window_width)
-        ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
+        if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    print(f"Done!")
+    if verbose: print(f"Done!")
     return volume_seq
     # 4. Standardization
     return (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
@@ -484,3 +511,9 @@ def get_volume(folder_path,
 def save_volume(volume, folder_path='volume.npy'):
     np.save(folder_path, volume)
     ic(f"Volume saved to {folder_path}")
+
+if __name__ == "__main__":
+    # Take all volumes with scan size 'small' --> 18x16x512x512 (T, Y, Z, X)
+    for folder_path in load_folder_paths(scan_size='small')[:num_samples]:
+        volume_seq = get_volume(folder_path)
+        save_volume(volume_seq, folder_path.replace('.dcm', '.npy'))

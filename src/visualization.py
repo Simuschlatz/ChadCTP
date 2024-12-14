@@ -148,8 +148,8 @@ def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
                              ncols, 
                              figsize=(5*ncols, 5*nrows),
                              squeeze=True,
-                             sharex='all',
-                             sharey='all'
+                            #  sharex='all',
+                            #  sharey='all'
                              )
     plt.subplots_adjust(left=0.1, bottom=0.25, right=0.9, top=0.9, wspace=0.1, hspace=0.4)
 
@@ -397,12 +397,13 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
                                  threshold_min=-25, threshold_max=150,
                                  initial_morph_y=3, initial_morph_x=3, initial_morph_z=3,
                                  initial_conn_y=3, initial_conn_x=3, initial_conn_z=3,
-                                 apply_window=True):
+                                 apply_window=True,
+                                 colormap='magma'):
     """Like interactive_plot_with_mask but uses get_3d_mask with adjustable 3D morphology and connectivity parameters"""
     plt.ion()  # Turn on interactive mode
     
     # Create figure with space for colorbars below
-    fig = plt.figure(figsize=(24, 8.5))
+    fig = plt.figure(figsize=(24, 8))
     gs = plt.GridSpec(2, 3, height_ratios=[20, 1])
     ax1 = plt.subplot(gs[0, 0])
     ax2 = plt.subplot(gs[0, 1])
@@ -414,25 +415,26 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
     
     # Original image on left
     if apply_window:
-        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap='magma')
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=colormap)
     else:
-        image = ax1.imshow(volume_seq[0, 0], cmap='magma')
+        image = ax1.imshow(volume_seq[0, 0], cmap=colormap)
     # Add colorbar below image
     plt.colorbar(image, cax=cax1, orientation='horizontal')
     ax1.set_title(f"{title} - Original")
     
     # Initial 3D mask
-    volume_mask = get_3d_mask(volume_seq[0], 
+    volume_masks = [get_3d_mask(volume_seq[t], 
                            threshold_min=threshold_min,
                            threshold_max=threshold_max,
                            remove_small_objects_size=initial_min_objects,
                            morphology_shape_2d=(1, 7),
                            morphology_shape_3d=(initial_morph_y, initial_morph_x, initial_morph_z),
                            connectivity_shape_3d=(initial_conn_y, initial_conn_x, initial_conn_z))
+                        for t in range(volume_seq.shape[0])]
     
     binary_cmap = ListedColormap(['black', 'white'])
     # Mask in middle with binary_r colormap
-    mask_plot = ax2.imshow(volume_mask[0], cmap=binary_cmap)
+    mask_plot = ax2.imshow(volume_masks[0][0], cmap=binary_cmap)
     ax2.set_title(f"{title} - Brain Mask")
     
     # Add legend for mask using the same colormap
@@ -445,11 +447,11 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
               loc='upper right', ncol=1)
 
     # Masked image on right
-    masked_img = apply_mask(volume_seq[0, 0], volume_mask[0])
+    masked_img = apply_mask(volume_seq[0, 0], volume_masks[0][0])
     if apply_window:
-        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap='magma')
+        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap=colormap)
     else:
-        masked_image = ax3.imshow(masked_img, cmap='magma')
+        masked_image = ax3.imshow(masked_img, cmap=colormap)
     # Add colorbar below masked image
     plt.colorbar(masked_image, cax=cax3, orientation='horizontal')
     ax3.set_title(f"{title} - Masked Brain")
@@ -487,6 +489,7 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
 
     def update_slice_time(val):
         current_volume = volume_seq[int(time_slider.val)]
+        current_mask = volume_masks[int(time_slider.val)]
         current_slice_idx = int(slice_slider.val)
         
         if apply_window:
@@ -494,9 +497,9 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
         else:
             image.set_data(current_volume[current_slice_idx])
         # Update mask
-        mask_plot.set_data(volume_mask[current_slice_idx])
+        mask_plot.set_data(current_mask[current_slice_idx])
         # Update masked image
-        masked_img = apply_mask(current_volume[current_slice_idx], volume_mask[current_slice_idx])
+        masked_img = apply_mask(current_volume[current_slice_idx], current_mask[current_slice_idx])
         ic(masked_img.max(), masked_img.min())
         if apply_window:
             masked_image.set_data(np.clip(masked_img, a_min=-40, a_max=120))
@@ -508,7 +511,7 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
     def update_mask(val):
                     
         # Update 3D mask with all parameters
-        volume_mask = get_3d_mask(volume_seq[0],
+        volume_masks = [get_3d_mask(volume_seq[t],
                                threshold_min=thresh_min_slider.val,
                                threshold_max=thresh_max_slider.val,
                                remove_small_objects_size=int(min_objects_slider.val),
@@ -516,16 +519,15 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
                                morphology_shape_3d=(int(morph_y_slider.val),
                                                   int(morph_x_slider.val),
                                                   int(morph_z_slider.val)))
-                            #    connectivity_shape_3d=(int(conn_y_slider.val),
-                            #                         int(conn_x_slider.val),
-                            #                         int(conn_z_slider.val)))
+                        for t in range(volume_seq.shape[0])]
+        current_mask = volume_masks[int(time_slider.val)]
         # Update masked image
-        masked_img = apply_mask(volume_seq[int(time_slider.val)][int(slice_slider.val)], volume_mask[int(slice_slider.val)])
+        masked_img = apply_mask(volume_seq[int(time_slider.val)][int(slice_slider.val)], current_mask[int(slice_slider.val)])
         if apply_window:
             masked_image.set_data(np.clip(masked_img, a_min=-40, a_max=120))
         else:
             masked_image.set_data(masked_img)
-        mask_plot.set_data(volume_mask[int(slice_slider.val)])
+        mask_plot.set_data(current_mask[int(slice_slider.val)])
     # Connect update function to all sliders
     time_slider.on_changed(update_slice_time)
     slice_slider.on_changed(update_slice_time)
