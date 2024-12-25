@@ -300,7 +300,7 @@ def get_skull_mask(volume: np.ndarray, threshold: int = 700) -> np.ndarray:
     return skull_mask
 
 @time_benchmark
-def register_volume(target_volume: np.ndarray, reference_image: sitk.Image) -> np.ndarray:
+def register_volume_3D(target_volume: np.ndarray, reference_image: sitk.Image) -> np.ndarray:
     """
     Registers a single volume to the reference image using rigid registration.
     Uses smoothed volumes for registration but applies transformation to original volume.
@@ -395,14 +395,106 @@ def register_volume(target_volume: np.ndarray, reference_image: sitk.Image) -> n
     except RuntimeError as e:
         print(f"Resampling failed: {e}")
         return target_volume
-
-def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int = 1, window_center: int = 40, window_width: int = 400) -> np.ndarray:
+    
+@time_benchmark
+def register_volume_2D(target_volume: np.ndarray, reference_image: sitk.Image, spacing: np.ndarray = (1.0, 1.0, 1.0)) -> np.ndarray:
+    """
+    Registers a single volume to the reference image using 2D rigid registration slice by slice.
+    Uses smoothed volumes for registration but applies transformation to original volume.
+    """
+    reference_volume = sitk.GetArrayFromImage(reference_image)
+    registered_volume = np.empty_like(target_volume)
+    
+    # Process each slice independently
+    for slice_idx in range(target_volume.shape[0]):
+        # Get corresponding slices
+        target_slice = target_volume[slice_idx]
+        reference_slice = reference_volume[slice_idx]
+        
+        # Create smoothed versions for registration
+        smoothed_target = ndimage.gaussian_filter(target_slice, sigma=1.0)
+        smoothed_reference = ndimage.gaussian_filter(reference_slice, sigma=1.0)
+        
+        # Convert to SimpleITK images
+        target_image = sitk.GetImageFromArray(smoothed_target)
+        reference_slice_image = sitk.GetImageFromArray(smoothed_reference)
+        
+        # Set physical properties
+        target_image.SetSpacing([1.0, 1.0])
+        reference_slice_image.SetSpacing([1.0, 1.0])
+        
+        # Initialize the 2D transform
+        initial_transform = sitk.CenteredTransformInitializer(
+            reference_slice_image,
+            target_image,
+            sitk.Euler2DTransform(),
+            sitk.CenteredTransformInitializerFilter.GEOMETRY
+        )
+        
+        # Set up registration method
+        registration_method = sitk.ImageRegistrationMethod()
+        registration_method.SetMetricAsMeanSquares()
+        registration_method.SetOptimizerAsRegularStepGradientDescent(
+            learningRate=0.2,
+            minStep=1e-4,
+            numberOfIterations=500,
+            gradientMagnitudeTolerance=1e-8
+        )
+        registration_method.SetInitialTransform(initial_transform)
+        registration_method.SetInterpolator(sitk.sitkLinear)
+        
+        # Add optimizer observer
+        def command_iteration(method):
+            if method.GetOptimizerIteration() == 0:
+                print(f"Starting registration for slice {slice_idx}...")
+            if method.GetOptimizerIteration() % 50 == 0:
+                print(f"Slice {slice_idx} - Iteration {method.GetOptimizerIteration()}: {method.GetMetricValue()}")
+                transform = method.GetOptimizerPosition()
+                    
+        registration_method.AddCommand(sitk.sitkIterationEvent, lambda: command_iteration(registration_method))
+        
+        try:
+            final_transform = registration_method.Execute(reference_slice_image, target_image)
+            
+            # Apply transform to original slice
+            original_slice_image = sitk.GetImageFromArray(target_slice)
+            original_slice_image.SetSpacing([1.0, 1.0])
+            
+            resampler = sitk.ResampleImageFilter()
+            resampler.SetReferenceImage(reference_slice_image)
+            resampler.SetTransform(final_transform)
+            resampler.SetInterpolator(sitk.sitkLinear)
+            resampler.SetDefaultPixelValue(-1024)
+            
+            registered_slice = sitk.GetArrayFromImage(resampler.Execute(original_slice_image))
+            
+            # Verify registration result
+            if np.sum(registered_slice > -1000) < 0.5 * np.sum(target_slice > -1000):
+                print(f"Warning: Registration may have failed for slice {slice_idx}")
+                registered_volume[slice_idx] = target_slice
+            else:
+                registered_volume[slice_idx] = registered_slice
+                
+        except RuntimeError as e:
+            print(f"Registration failed for slice {slice_idx}: {e}")
+            registered_volume[slice_idx] = target_slice
+            
+    return registered_volume
+def rigid_register_volume_sequence(volume_seq: np.ndarray, 
+                                   spacing: np.ndarray = (1.0, 1.0, 1.0),
+                                   reference_index: int = 1,
+                                   registering_structure: str = 'all',
+                                   window_center: int = 40, 
+                                   window_width: int = 400) -> np.ndarray:
     """
     Performs skull-based rigid registration on a sequence of volumes using the specified reference volume.
 
     Parameters:
     - volume_seq (np.ndarray): 4D array of shape (T, Y, Z, X) representing the volume sequence.
     - reference_index (int): Index of the reference volume in the sequence to which other volumes will be registered.
+    - registering_structure (str): The structure used in registration. One of: 'all', 'skull', 'brain'. Defaults to 'all'.
+    - window_center (int): The center of the window in HU. Defaults to 40.
+    - window_width (int): The width of the window in HU. Defaults to 400.
 
     Returns:
     - np.ndarray: 4D array of registered volumes with the same shape as the input.
@@ -410,13 +502,20 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int 
     if not (0 <= reference_index < volume_seq.shape[0]):
         raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
 
-    # Window the sequence
+    # Window the sequence to reduce impact of noise or outliers
     volume_seq = apply_window(volume_seq, window_center, window_width)
     reference_volume = volume_seq[reference_index]
-    reference_image = sitk.GetImageFromArray(reference_volume)
-    reference_image.SetSpacing([1.0, 1.0, 1.0])
+    if registering_structure == 'all':
+        reference_image = sitk.GetImageFromArray(reference_volume)
+    elif registering_structure == 'skull':
+        reference_image = sitk.GetImageFromArray(get_skull_mask(reference_volume))
+    elif registering_structure == 'brain':
+        reference_image = sitk.GetImageFromArray(get_3d_mask(reference_volume))
+    else:
+        raise ValueError(f"Invalid registering structure: {registering_structure}. Must be one of: 'all', 'skull', 'brain'.")
+    reference_image.SetSpacing(spacing)
 
-    print(f"Starting skull-based rigid registration of {volume_seq.shape[0]} volumes to reference index {reference_index}")
+    # print(f"Starting skull-based rigid registration of {volume_seq.shape[0]} volumes to reference index {reference_index}")
 
     # Initialize the output array
     registered_seq = np.empty_like(volume_seq)
@@ -426,7 +525,7 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int 
     for i in range(volume_seq.shape[0]):
         if i == reference_index: continue
         ic(f"Registering volume {i}")
-        registered_seq[i] = register_volume(volume_seq[i], reference_image)
+        registered_seq[i] = register_volume_2D(volume_seq[i], reference_image)
 
     print("All registrations completed.")
     ic(registered_seq.shape, registered_seq.dtype)
@@ -435,6 +534,7 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray, reference_index: int 
 def get_volume(folder_path, 
                windowing=True, 
                windowing_type='brain',
+               filter=True,
                extract_brain=True, 
                correct_motion=True,
                reference_index=1,
@@ -466,9 +566,14 @@ def get_volume(folder_path,
 
     if verbose: print(f"Processing {folder_path}...")
     ds = datasets[0]
-    # print(ds)
+
+    # Get the spacing of the volume sequence
+    slice_thickness = ds.SliceThickness
+    pixel_spacing = ds.PixelSpacing
+    spacing = np.array([slice_thickness, pixel_spacing[0], pixel_spacing[1]])
+    print(slice_thickness, pixel_spacing)
     # Assume that each volume in the sequence has the same dimensions
-    Y = int((datasets[-1].SliceLocation - datasets[0].SliceLocation + 5) // ds.SliceThickness) # Height
+    Y = int((datasets[-1].SliceLocation - ds.SliceLocation + 5) // ds.SliceThickness) # Height
     Z, X = ds.Rows // spatial_downsampling_factor, ds.Columns // spatial_downsampling_factor # Depth, Width
     n_volumes = len(datasets) // Y
     T = max(1, n_volumes // temporal_downsampling_factor) # Temporal dimension
@@ -480,11 +585,11 @@ def get_volume(folder_path,
             slice = convert_to_HU(slice, *get_conversion_params(ds))
             if spatial_downsampling_factor > 1:
                 slice = downsample(slice, factor=spatial_downsampling_factor)
-            slice = bilateral_filter(slice, 10, 10)
+            if filter: slice = bilateral_filter(slice, 10, 10)
             volume_seq[t, y] = slice
 
     if correct_motion:
-        volume_seq = rigid_register_volume_sequence(volume_seq, reference_index=reference_index)
+        volume_seq = rigid_register_volume_sequence(volume_seq, spacing=spacing, reference_index=reference_index)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
     if extract_brain:

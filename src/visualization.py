@@ -680,6 +680,54 @@ def save_slices_with_mask(volume_seq, folder_path):
         plt.savefig(f"Images/{folder_path.split('/')[-1]}/slice_{i}.jpg")
         plt.close()
 
+def overlay_volumes(base_volume, overlay_volume, title=None, show=True):
+    """
+    Display one 3D volume overlaid on another with different colormaps and an interactive slice slider.
+    
+    Args:
+        base_volume: The base volume to display in grayscale (3D array)
+        overlay_volume: The volume to overlay in hot colormap with transparency (3D array)
+        title: Optional title for the plot
+        show: Whether to display the plot immediately
+    """
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    if title:
+        ax.set_title(title)
+    
+    # Display initial slice
+    base_img = ax.imshow(base_volume[0], cmap='gray')
+    overlay_img = ax.imshow(overlay_volume[0], cmap='hot', alpha=0.5)
+    plt.colorbar(overlay_img, ax=ax)
+    ax.axis('off')
+    
+    # Add slider
+    ax_slider = plt.axes([0.2, 0.02, 0.6, 0.03])
+    slider = Slider(ax_slider, 'Slice', 0, len(base_volume)-1, valinit=0, valstep=1)
+    
+    def update(val):
+        slice_idx = int(slider.val)
+        base_img.set_data(base_volume[slice_idx])
+        overlay_img.set_data(overlay_volume[slice_idx])
+        fig.canvas.draw_idle()
+    
+    slider.on_changed(update)
+    
+    # Add scroll functionality
+    def on_scroll(event):
+        if event.button == 'up':
+            slider.set_val(min(slider.val + 1, slider.valmax))
+        elif event.button == 'down':
+            slider.set_val(max(slider.val - 1, slider.valmin))
+    
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    
+    if show:
+        plt.show()
+    
+    return fig, ax
+
+
 from matplotlib import animation, rc
 
 def create_animation(ims):
