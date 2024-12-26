@@ -10,6 +10,7 @@ from numba import jit, prange
 import SimpleITK as sitk
 from concurrent.futures import ThreadPoolExecutor
 from time import time
+from registration import register_volume_inplane_weighted
 
 dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
 num_samples = 10
@@ -525,7 +526,7 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
     for i in range(volume_seq.shape[0]):
         if i == reference_index: continue
         ic(f"Registering volume {i}")
-        registered_seq[i] = register_volume_2D(volume_seq[i], reference_image)
+        registered_seq[i] = register_volume_inplane_weighted(volume_seq[i], reference_image, n_samples=5, weighting_scheme='inverse')
 
     print("All registrations completed.")
     ic(registered_seq.shape, registered_seq.dtype)
