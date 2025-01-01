@@ -46,7 +46,7 @@ def train_model(config=Config):
     # Get data loaders
     train_loader, val_loader, test_loader = get_data_loaders(
         batch_size=config.batch_size,
-        sequence_length=config.sequence_length
+        sequence_length=config.sequence_length,
     )
     
     # Initialize model

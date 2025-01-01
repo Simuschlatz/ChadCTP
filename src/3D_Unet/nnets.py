@@ -193,7 +193,7 @@ class AttentionGate(nn.Module):
         g1 = self.Wg(g)
         l1 = self.Wl(l)
         
-        # Ensure compatible dimensions
+        # Ensure compatible dimensionsx
         if g1.shape[2:] != l1.shape[2:]:
             g1 = F.interpolate(g1, size=l1.shape[2:])
         

@@ -727,6 +727,68 @@ def overlay_volumes(base_volume, overlay_volume, title=None, show=True):
     
     return fig, ax
 
+def overlay_volume_sequence(volume_seq, title=None, show=True):
+    """
+    Display each volume in a sequence overlaid on the first volume with different colormaps 
+    and interactive slice sliders.
+    
+    Args:
+        volume_seq: 4D array of shape (T, Y, Z, X) representing the volume sequence
+        title: Optional title for the plot
+        show: Whether to display the plot immediately
+    """
+    n_volumes = volume_seq.shape[0]
+    base_volume = volume_seq[0]
+    
+    # Create subplot for each volume after the first
+    fig, axes = plt.subplots(1, n_volumes-1, figsize=(5*n_volumes, 8))
+    if n_volumes == 2:  # Handle case of single subplot
+        axes = [axes]
+        
+    if title:
+        fig.suptitle(title)
+        
+    # Display initial slices
+    base_imgs = []
+    overlay_imgs = []
+    for i, ax in enumerate(axes):
+        base_img = ax.imshow(base_volume[0], cmap='gray')
+        overlay_img = ax.imshow(volume_seq[i+1][0], cmap='hot', alpha=0.5)
+        plt.colorbar(overlay_img, ax=ax)
+        ax.axis('off')
+        ax.set_title(f'Volume {i+1}')
+        base_imgs.append(base_img)
+        overlay_imgs.append(overlay_img)
+    
+    # Add slider
+    ax_slider = plt.axes([0.2, 0.02, 0.6, 0.03])
+    slider = Slider(ax_slider, 'Slice', 0, len(base_volume)-1, valinit=0, valstep=1)
+    
+    def update(val):
+        slice_idx = int(slider.val)
+        for i in range(len(axes)):
+            base_imgs[i].set_data(base_volume[slice_idx])
+            overlay_imgs[i].set_data(volume_seq[i+1][slice_idx])
+        fig.canvas.draw_idle()
+    
+    slider.on_changed(update)
+    
+    # Add scroll functionality
+    def on_scroll(event):
+        if event.button == 'up':
+            slider.set_val(min(slider.val + 1, slider.valmax))
+        elif event.button == 'down':
+            slider.set_val(max(slider.val - 1, slider.valmin))
+    
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    
+    plt.tight_layout()
+    
+    if show:
+        plt.show()
+    
+    return fig, axes
+
 
 from matplotlib import animation, rc
 
