@@ -30,10 +30,10 @@ if __name__ == "__main__":
         volume_seq = get_volume(folder_path, 
                                 extract_brain=True,
                                 windowing=True,
-                                correct_motion=True,
-                                filter=True,
+                                correct_motion=False,
+                                filter=False,
                                 spatial_downsampling_factor=2, 
-                                temporal_downsampling_factor=7)
+                                temporal_downsampling_factor=1)
         # volume_seq2 = get_volume(folder_path, 
         #                         extract_brain=False,
         #                         windowing=True,
