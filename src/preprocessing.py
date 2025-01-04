@@ -824,10 +824,13 @@ def save_selected_volumes(IDs: list, save_path: str='selected_volumes'):
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     for ID in IDs:
+        if os.path.exists(os.path.join(save_path, f'MOL-{ID}.npy')):
+            print(f"Volume {ID} already exists")
+            continue
         folder_path = os.path.join(dataset_path, f'MOL-{ID}')
         volume_seq = get_volume(folder_path, spatial_downsampling_factor=2)
         save_volume(volume_seq, os.path.join(save_path, f'MOL-{ID}.npy'))
 
 if __name__ == "__main__":
-    IDs = ['001', '060', '061', '062', '094', '095','097', '097', '101', '105']
+    IDs = ['001', '060', '061', '062', '094','096', '097', '101', '104', '105']
     save_selected_volumes(IDs)
