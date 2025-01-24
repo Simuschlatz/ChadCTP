@@ -6,12 +6,13 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.colors import ListedColormap
-from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask
+from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask, apply_bilateral_filter, apply_window
 import imageio
 from skimage import measure
 from icecream import ic
 import numpy as np
 import os
+
 def render_volume_slices(volume, cmap='magma', figsize=(12, 12)):
     """
     Renders all slices of a 3D volume with no gaps between images.
@@ -581,9 +582,6 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
         plt.show(block=True)
     return fig, (ax1, ax2, ax3)
 
-
-
-
 def interactive_plot_with_binary_mask(volume_seq, volume_mask, title="", show=True):
     """
     Displays an interactive plot of a volume with a binary mask overlay.
@@ -679,6 +677,94 @@ def save_slices_with_mask(volume_seq, folder_path):
         # Save image
         plt.savefig(f"Images/{folder_path.split('/')[-1]}/slice_{i}.jpg")
         plt.close()
+
+
+def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, initial_sigma_space=1.0, initial_sigma_intensity=1.0, windowing_params=(80, 160)):
+    """
+    Interactive plot for a volume sequence with adjustable sigma_space and sigma_intensity for bilateral filtering.
+    
+    Args:
+        volume_seq: 4D numpy array (time, slices, height, width)
+        title: Title of the plot
+        show: Whether to display the plot immediately
+        initial_sigma_space: Initial value for sigma_space slider
+        initial_sigma_intensity: Initial value for sigma_intensity slider
+    
+    Returns:
+        fig, ax: Matplotlib figure and axis objects
+    """
+    plt.ion()  # Turn on interactive mode
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
+    
+    if windowing_params:
+        
+        
+
+    # Original image on the left
+    image_original = ax1.imshow(volume_seq[0, 0], cmap='magma')
+    ax1.set_title(f"{title} - Original")
+    ax1.axis('off')
+    
+    # Filtered image on the right
+    filtered_image_data = apply_bilateral_filter(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
+    image_filtered = ax2.imshow(filtered_image_data, cmap='magma')
+    ax2.set_title(f"{title} - Bilateral Filtered")
+    ax2.axis('off')
+    
+    # Create sliders
+    ax_slice_slider = plt.axes([0.15, 0.25, 0.7, 0.03])
+    ax_time_slider = plt.axes([0.15, 0.20, 0.7, 0.03])
+    ax_sigma_space_slider = plt.axes([0.15, 0.15, 0.7, 0.03])
+    ax_sigma_intensity_slider = plt.axes([0.15, 0.10, 0.7, 0.03])
+    
+    slice_slider = Slider(ax_slice_slider, 'Slice', 0, volume_seq.shape[1]-1, valinit=0, valstep=1)
+    time_slider = Slider(ax_time_slider, 'Time', 0, volume_seq.shape[0]-1, valinit=0, valstep=1)
+    sigma_space_slider = Slider(ax_sigma_space_slider, 'Sigma Space', 0.1, 10.0, valinit=initial_sigma_space, valstep=0.1)
+    sigma_intensity_slider = Slider(ax_sigma_intensity_slider, 'Sigma Intensity', 0.1, 10.0, valinit=initial_sigma_intensity, valstep=0.1)
+    
+    def update(val):
+        current_time = int(time_slider.val)
+        current_slice = int(slice_slider.val)
+        sigma_space = sigma_space_slider.val
+        sigma_intensity = sigma_intensity_slider.val
+        
+        original_data = volume_seq[current_time, current_slice]
+        filtered_data = apply_bilateral_filter(original_data, sigma_space, sigma_intensity)
+        
+        image_original.set_data(original_data)
+        image_filtered.set_data(filtered_data)
+        
+        fig.canvas.draw_idle()
+    
+    # Connect update function to sliders
+    time_slider.on_changed(update)
+    slice_slider.on_changed(update)
+    sigma_space_slider.on_changed(update)
+    sigma_intensity_slider.on_changed(update)
+    
+    def on_scroll(event):
+        if event.inaxes == ax_time_slider:
+            time_slider.set_val(min(time_slider.val + 1, time_slider.valmax))
+        elif event.inaxes == ax_slice_slider:
+            slice_slider.set_val(min(slice_slider.val + 1, slice_slider.valmax))
+        elif event.inaxes == ax_sigma_space_slider:
+            sigma_space_slider.set_val(min(sigma_space_slider.val + 0.1, sigma_space_slider.valmax))
+        elif event.inaxes == ax_sigma_intensity_slider:
+            sigma_intensity_slider.set_val(min(sigma_intensity_slider.val + 0.1, sigma_intensity_slider.valmax))
+        
+    def on_motion(event):
+        if event.inaxes in [ax1, ax2]:
+            plt.gcf().canvas.set_cursor(1)
+    
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    
+    if show:
+        plt.show(block=True)
+    
+    return fig, (ax1, ax2)
+
 
 def overlay_volumes(base_volume, overlay_volume, title=None, show=True):
     """

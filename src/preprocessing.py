@@ -234,7 +234,7 @@ def downsample(image: np.ndarray, factor=4):
 def gaussian(x_square, sigma):
     return np.exp(-0.5*x_square/sigma**2)
 
-def bilateral_filter(image, sigma_space, sigma_intensity):
+def apply_bilateral_filter(image, sigma_space, sigma_intensity):
     """
     Vectorized bilateral filter implementation.
     """
@@ -257,9 +257,9 @@ def bilateral_filter(image, sigma_space, sigma_intensity):
             Gintenisity = gaussian(
                 intensity_difference_image ** 2, sigma_intensity)
             # Weighted sum
-            result += Gspace*Gintenisity*shifted_image
+            result += Gspace * Gintenisity * shifted_image
             # Total weight
-            W += Gspace*Gintenisity
+            W += Gspace * Gintenisity
 
     return result / W
 
@@ -267,7 +267,7 @@ def filter_volume(args):
     volume, sigma_space, sigma_intensity = args
     filtered_volume = np.zeros_like(volume)
     for i, slice in enumerate(volume):
-        filtered_volume[i] = bilateral_filter(slice, sigma_space, sigma_intensity)
+        filtered_volume[i] = apply_bilateral_filter(slice, sigma_space, sigma_intensity)
     return filtered_volume
 
 def filter_volume_seq(volume_seq, sigma_space, sigma_intensity):
@@ -781,11 +781,10 @@ def get_volume(folder_path,
 
     if windowing:
         window_center, window_width = get_window_from_type(windowing_type)
-        ic(window_center, window_width)
         volume_seq = apply_window(volume_seq, window_center, window_width)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    if filter: volume_seq = filter_volume_seq(volume_seq, 10, 10)
+    if filter: volume_seq = filter_volume_seq(volume_seq, 20, 10)
     
     if correct_motion:
         volume_seq = rigid_register_volume_sequence(
@@ -798,17 +797,12 @@ def get_volume(folder_path,
 
     if extract_brain: # Apply brain mask to all registered volumes
         volume_seq = apply_mask(volume_seq, volume_mask)
-        if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
-    
 
     if verbose: print(f"Done!")
     # Standardization
     if standardize:
         return (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
     return volume_seq
-
-    # Normalization
-    # return normalize(volume_seq)
 
 def save_volume(volume, folder_path='volume.npy'):
     np.save(folder_path, volume)
