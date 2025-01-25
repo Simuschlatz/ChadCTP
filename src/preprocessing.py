@@ -234,19 +234,48 @@ def downsample(image: np.ndarray, factor=4):
 def gaussian(x_square, sigma):
     return np.exp(-0.5*x_square/sigma**2)
 
+import SimpleITK as sitk
+def apply_bilateral_filter_sitk(image, sigma_space, sigma_intensity):
+    """
+    Apply bilateral filter using SimpleITK implementation.
+    
+    Args:
+        image: 2D numpy array input image
+        sigma_space: Spatial sigma parameter for bilateral filter
+        sigma_intensity: Intensity sigma parameter for bilateral filter
+        
+    Returns:
+        Filtered 2D numpy array
+    """
+    # Convert numpy array to SimpleITK image
+    sitk_image = sitk.GetImageFromArray(image.astype(np.float32))
+    
+    # Create and configure bilateral filter
+    bilateral_filter = sitk.BilateralImageFilter()
+    bilateral_filter.SetDomainSigma(sigma_space)
+    bilateral_filter.SetRangeSigma(sigma_intensity)
+    
+    # Apply filter and get result
+    filtered_sitk = bilateral_filter.Execute(sitk_image)
+    
+    # Convert back to numpy array
+    filtered_image = sitk.GetArrayFromImage(filtered_sitk)
+    
+    return filtered_image
+
 def apply_bilateral_filter(image, sigma_space, sigma_intensity):
     """
     Vectorized bilateral filter implementation.
     """
     # kernel_size should be twice the sigma space to avoid calculating negligible values
-    kernel_size = int(2*sigma_space)
+    kernel_size = int(2 * sigma_space)
     half_kernel_size = kernel_size // 2
     result = np.zeros(image.shape)
     W = 0
 
     # Iterating over the kernel
-    for x in range(-half_kernel_size, half_kernel_size+1):
-        for y in range(-half_kernel_size, half_kernel_size+1):
+    for x in range(-half_kernel_size, half_kernel_size + 1):
+        for y in range(-half_kernel_size, half_kernel_size + 1):
             # Spatial Gaussian
             Gspace = gaussian(x ** 2 + y ** 2, sigma_space)
             # Shifted image

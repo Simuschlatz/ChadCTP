@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.colors import ListedColormap
-from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask, apply_bilateral_filter, apply_window
+from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask, apply_bilateral_filter, apply_bilateral_filter_sitk,apply_window
 import imageio
 from skimage import measure
 from icecream import ic
@@ -679,7 +679,7 @@ def save_slices_with_mask(volume_seq, folder_path):
         plt.close()
 
 
-def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, initial_sigma_space=1.0, initial_sigma_intensity=1.0, windowing_params=(80, 160)):
+def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, initial_sigma_space=3.0, initial_sigma_intensity=15, windowing_params=(80, 160)):
     """
     Interactive plot for a volume sequence with adjustable sigma_space and sigma_intensity for bilateral filtering.
     
@@ -696,20 +696,24 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     plt.ion()  # Turn on interactive mode
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
     plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
-    
+
     if windowing_params:
-        
-        
+        try:
+            volume_seq = apply_window(volume_seq, *windowing_params)
+        except Exception as e:
+            print(f"Error applying windowing: {e}")
 
     # Original image on the left
     image_original = ax1.imshow(volume_seq[0, 0], cmap='magma')
     ax1.set_title(f"{title} - Original")
+    plt.colorbar(image_original, ax=ax1)
     ax1.axis('off')
     
     # Filtered image on the right
     filtered_image_data = apply_bilateral_filter(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
     image_filtered = ax2.imshow(filtered_image_data, cmap='magma')
     ax2.set_title(f"{title} - Bilateral Filtered")
+    plt.colorbar(image_filtered, ax=ax2)
     ax2.axis('off')
     
     # Create sliders
@@ -720,8 +724,8 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     
     slice_slider = Slider(ax_slice_slider, 'Slice', 0, volume_seq.shape[1]-1, valinit=0, valstep=1)
     time_slider = Slider(ax_time_slider, 'Time', 0, volume_seq.shape[0]-1, valinit=0, valstep=1)
-    sigma_space_slider = Slider(ax_sigma_space_slider, 'Sigma Space', 0.1, 10.0, valinit=initial_sigma_space, valstep=0.1)
-    sigma_intensity_slider = Slider(ax_sigma_intensity_slider, 'Sigma Intensity', 0.1, 10.0, valinit=initial_sigma_intensity, valstep=0.1)
+    sigma_space_slider = Slider(ax_sigma_space_slider, 'Sigma Space', 0, 20.0, valinit=initial_sigma_space, valstep=1)
+    sigma_intensity_slider = Slider(ax_sigma_intensity_slider, 'Sigma Intensity', 0, 30.0, valinit=initial_sigma_intensity, valstep=0.5)
     
     def update(val):
         current_time = int(time_slider.val)
@@ -730,11 +734,11 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
         sigma_intensity = sigma_intensity_slider.val
         
         original_data = volume_seq[current_time, current_slice]
-        filtered_data = apply_bilateral_filter(original_data, sigma_space, sigma_intensity)
+        filtered_data = apply_bilateral_filter_sitk(original_data, sigma_space, sigma_intensity)
         
         image_original.set_data(original_data)
         image_filtered.set_data(filtered_data)
-        
+
         fig.canvas.draw_idle()
     
     # Connect update function to sliders

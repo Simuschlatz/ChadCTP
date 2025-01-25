@@ -15,10 +15,11 @@ if __name__ == "__main__":
                                 windowing=False,
                                 correct_motion=False,
                                 filter=False,
+                                standardize=False,
                                 spatial_downsampling_factor=2, 
                                 temporal_downsampling_factor=8)
                                 
-        interactive_plot_with_bilateral_filter(volume_seq, title=folder_path.split('/')[-1])
+        interactive_plot_with_bilateral_filter(volume_seq, title=folder_path.split('/')[-1], windowing_params=(40, 80))
         # volume_seq = get_volume(folder_path, 
         #                         extract_brain=True,
         #                         windowing=True,
