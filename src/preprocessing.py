@@ -748,8 +748,7 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
     return registered_seq
 
 def get_volume(folder_path, 
-               windowing=True, 
-               windowing_type='brain',
+               window_params: tuple|str|None=(80, 160), 
                filter=True,
                extract_brain=True,
                standardize=True,
@@ -757,6 +756,7 @@ def get_volume(folder_path,
                reference_index=0,
                spatial_downsampling_factor=4, 
                temporal_downsampling_factor=1,
+               slice_based=False,
                verbose=True) -> np.ndarray:
     """
     Processes the DICOM files in a folder with folder path `folder_path`.
@@ -765,6 +765,8 @@ def get_volume(folder_path,
     in HU, windowed, brain-extracted, registered, filtered, standardized
 
     Parameters:
+    - `window_params` (tuple | str | None, optional): Controls windowing. If None, no windowing is applied. If tuple, it is interpreted as (window_center, window_width). 
+    If str, it is interpreted as a windowing type. Defaults to (80, 160).
     - `extract_brain` (bool, optional): Whether to extract the brain from the volume sequence. Defaults to True.
     - `correct_motion` (bool, optional): Whether to correct motion in the volume sequence. Defaults to True.
     - `reference_index` (int, optional): Index of the reference volume in the sequence to which other volumes will be registered. Defaults to 1.
@@ -808,12 +810,15 @@ def get_volume(folder_path,
     if extract_brain: # Calculate single brain mask for all volumes before windowing
         volume_mask = get_3d_mask(volume_seq[0])
 
-    if windowing:
-        window_center, window_width = get_window_from_type(windowing_type)
+    if window_params is not None:
+        if type(window_params) == str:
+            window_center, window_width = get_window_from_type(window_params)
+        else:
+            window_center, window_width = window_params
         volume_seq = apply_window(volume_seq, window_center, window_width)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    if filter: volume_seq = filter_volume_seq(volume_seq, 20, 10)
+    if filter: volume_seq = filter_volume_seq(volume_seq, 2, 15)
     
     if correct_motion:
         volume_seq = rigid_register_volume_sequence(
@@ -830,7 +835,11 @@ def get_volume(folder_path,
     if verbose: print(f"Done!")
     # Standardization
     if standardize:
-        return (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
+        if slice_based: # Standardize each slice sequence individually (for 2D video prediction)
+            for slice_idx in range(volume_seq.shape[1]):
+                volume_seq[:, slice_idx] = (volume_seq[:, slice_idx] - np.mean(volume_seq[:, slice_idx])) / np.std(volume_seq[:, slice_idx])
+        else: # Standardize the entire volume sequence (for 3D video prediction)
+            volume_seq = (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
     return volume_seq
 
 def save_volume(volume, folder_path='volume.npy'):
