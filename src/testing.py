@@ -8,18 +8,18 @@ if __name__ == "__main__":
     dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
 
     folder_paths = load_folder_paths('small')
-    for folder_path in folder_paths: # [os.path.join(dataset_path, 'MOL-002')]: # folder_paths[13:]: 
+    for folder_path in folder_paths[70:]: # [os.path.join(dataset_path, 'MOL-002')]: # folder_paths[13:]: 
         
         volume_seq = get_volume(folder_path, 
                                 extract_brain=False,
-                                windowing=False,
                                 correct_motion=False,
+                                window_params='brain',
                                 filter=False,
                                 standardize=False,
                                 spatial_downsampling_factor=2, 
-                                temporal_downsampling_factor=8)
+                                temporal_downsampling_factor=2)
                                 
-        interactive_plot_with_bilateral_filter(volume_seq, title=folder_path.split('/')[-1], windowing_params=(40, 80))
+        # interactive_plot_with_bilateral_filter(volume_seq, title=folder_path.split('/')[-1], windowing_params=(80, 160))
         # volume_seq = get_volume(folder_path, 
         #                         extract_brain=True,
         #                         windowing=True,
@@ -34,7 +34,7 @@ if __name__ == "__main__":
         #                 filter=False,
         #                 spatial_downsampling_factor=1, 
         #                 temporal_downsampling_factor=80)
-        # interactive_plot(volume_seq)
+        interactive_plot(volume_seq)
         # multi_vol_seq_iplot([volume_seq, v2], ['Vorgestellt', 'UniToBrain Preprocessing'])
     # for folder_path in folder_paths[13:]: # [os.path.join(dataset_path, 'MOL-120')]:
         # overlay_volume_sequence(np.concatenate([volume_seq, v2[1:]], axis=0))

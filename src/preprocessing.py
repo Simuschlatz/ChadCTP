@@ -598,6 +598,7 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
 
         registration_method.SetInitialTransform(initial_transform)
         registration_method.SetInterpolator(sitk.sitkLinear)
+        
         if verbose:
             registration_method.AddCommand(sitk.sitkIterationEvent, lambda: command_iteration(registration_method))
         try:

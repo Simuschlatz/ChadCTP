@@ -694,7 +694,7 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
         fig, ax: Matplotlib figure and axis objects
     """
     plt.ion()  # Turn on interactive mode
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
     plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
 
     if windowing_params:
@@ -709,12 +709,19 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     plt.colorbar(image_original, ax=ax1)
     ax1.axis('off')
     
-    # Filtered image on the right
-    filtered_image_data = apply_bilateral_filter(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
-    image_filtered = ax2.imshow(filtered_image_data, cmap='magma')
-    ax2.set_title(f"{title} - Bilateral Filtered")
-    plt.colorbar(image_filtered, ax=ax2)
+    # SimpleITK filtered image in the middle
+    filtered_image_data_sitk = apply_bilateral_filter_sitk(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
+    image_filtered_sitk = ax2.imshow(filtered_image_data_sitk, cmap='magma')
+    ax2.set_title(f"{title} - SimpleITK Bilateral Filter")
+    plt.colorbar(image_filtered_sitk, ax=ax2)
     ax2.axis('off')
+
+    # Custom filtered image on the right
+    filtered_image_data = apply_bilateral_filter(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
+    image_filtered = ax3.imshow(filtered_image_data, cmap='magma')
+    ax3.set_title(f"{title} - Custom Bilateral Filter")
+    plt.colorbar(image_filtered, ax=ax3)
+    ax3.axis('off')
     
     # Create sliders
     ax_slice_slider = plt.axes([0.15, 0.25, 0.7, 0.03])
@@ -734,9 +741,11 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
         sigma_intensity = sigma_intensity_slider.val
         
         original_data = volume_seq[current_time, current_slice]
-        filtered_data = apply_bilateral_filter_sitk(original_data, sigma_space, sigma_intensity)
+        filtered_data_sitk = apply_bilateral_filter_sitk(original_data, sigma_space, sigma_intensity)
+        filtered_data = apply_bilateral_filter(original_data, sigma_space, sigma_intensity)
         
         image_original.set_data(original_data)
+        image_filtered_sitk.set_data(filtered_data_sitk)
         image_filtered.set_data(filtered_data)
 
         fig.canvas.draw_idle()
@@ -758,7 +767,7 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
             sigma_intensity_slider.set_val(min(sigma_intensity_slider.val + 0.1, sigma_intensity_slider.valmax))
         
     def on_motion(event):
-        if event.inaxes in [ax1, ax2]:
+        if event.inaxes in [ax1, ax2, ax3]:
             plt.gcf().canvas.set_cursor(1)
     
     fig.canvas.mpl_connect('scroll_event', on_scroll)
@@ -767,7 +776,7 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     if show:
         plt.show(block=True)
     
-    return fig, (ax1, ax2)
+    return fig, (ax1, ax2, ax3)
 
 
 def overlay_volumes(base_volume, overlay_volume, title=None, show=True):
