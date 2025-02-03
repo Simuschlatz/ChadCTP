@@ -99,10 +99,6 @@ def get_windowing_params(ds):
 def get_conversion_params(ds):
     return ds.RescaleIntercept, ds.RescaleSlope
 
-def is_homogenous_windowing_params(datasets):
-    params = get_windowing_params(datasets[0])
-    return all(get_windowing_params(ds) == params for ds in datasets[1:])
-
 @jit(nopython=True)
 def threshold(ct_volume, skull_threshold=700):
     """
@@ -115,7 +111,7 @@ def threshold(ct_volume, skull_threshold=700):
     return thresholded
 
 @jit(nopython=True)
-def get_threshold_mask(slice, min_val=-40, max_val=120):
+def get_threshold_mask(slice, min_val=-40, max_val=150):
     return (min_val < slice) & (slice < max_val)
 
 
@@ -221,7 +217,7 @@ def get_3d_mask(volume: np.ndarray,
 @jit(nopython=True)
 def apply_mask(a: np.ndarray, mask: np.ndarray):
     min_val = np.min(a)
-    return (a + min_val) * mask - min_val
+    return (a - min_val) * mask + min_val
 
 @jit(nopython=True)
 def downsample(image: np.ndarray, factor=4):
@@ -819,15 +815,15 @@ def get_volume(folder_path,
         volume_seq = apply_window(volume_seq, window_center, window_width)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    if filter: volume_seq = filter_volume_seq(volume_seq, 2, 15)
+    if filter: volume_seq = filter_volume_seq(volume_seq, 2, 12.5)
     
     if correct_motion:
         volume_seq = rigid_register_volume_sequence(
             volume_seq, 
             spacing=spacing, 
             reference_index=reference_index,
-            n_iters=1000,
-            n_samples=1,
+            n_iters=200,
+            n_samples=3,
         )
 
     if extract_brain: # Apply brain mask to all registered volumes
