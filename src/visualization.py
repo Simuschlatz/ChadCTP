@@ -4,9 +4,10 @@
 import scipy
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
+import json
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.colors import ListedColormap
-from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask, apply_bilateral_filter, apply_bilateral_filter_sitk,apply_window
+from preprocessing import get_2d_mask, get_3d_mask, get_largest_connected_component, apply_mask, apply_bilateral_filter, apply_bilateral_filter_sitk, apply_window
 import imageio
 from skimage import measure
 from icecream import ic
@@ -75,11 +76,14 @@ def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True):
     
     return fig, ax
 
-def interactive_plot(volume_seq, title="", show=True):
+def interactive_plot(volume_seq, title="", show=True, windowing_params=None):
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots()
     plt.subplots_adjust(left=0.25, bottom=0.25)
-    image = ax.imshow(volume_seq[0, 0], cmap='magma')
+    if windowing_params is not None:
+        image = ax.imshow(apply_window(volume_seq[0, 0], *windowing_params), cmap='magma')
+    else:
+        image = ax.imshow(volume_seq[0, 0], cmap='magma')
     plt.title(title)
 
     ax_slice_slider = plt.axes([0.25, 0.15, 0.65, 0.03])
@@ -91,7 +95,10 @@ def interactive_plot(volume_seq, title="", show=True):
     plt.colorbar(image, ax=ax)
 
     def update(val, scrolling_slider, slider):
-        image.set_data(volume_seq[int(time_slider.val), int(slice_slider.val)])
+        if windowing_params is not None:
+            image.set_data(apply_window(volume_seq[int(time_slider.val), int(slice_slider.val)], *windowing_params))
+        else:
+            image.set_data(volume_seq[int(time_slider.val), int(slice_slider.val)])
         fig.canvas.draw_idle()
         scrolling_slider[0] = slider
 
@@ -115,6 +122,190 @@ def interactive_plot(volume_seq, title="", show=True):
     if show:
         plt.show(block=True)
     return fig, ax
+
+def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing_params=None, json_path="volumes.json"):
+    """
+    Cycle through npy volume files stored in the provided folder. Each volume is assumed 
+    to be a 4D numpy array with shape (time, slice, height, width).
+
+    The plot displays the current volume with interactive sliders for time and slice.
+    A key press listener is attached so that:
+      - Pressing Space sets a flag.
+      - Pressing Enter saves the current volume title (derived from the filename, without extension)
+        to a JSON file. The title is always added to the "checked" category and, if the Space key was pressed,
+        it is also added to "exclude". In addition, if volumes have already been processed 
+        (i.e. present in the JSON file under "checked"), those files will be skipped.
+      - Pressing Backspace reverses the last scan: it deletes the last scan from the JSON data and 
+        changes the plot to the previous scan.
+      Instead of closing the window, the function updates the figure with the next volume.
+
+    Parameters:
+      data_folder: str, path to the folder containing npy volume files (default "Experiments/Data")
+      windowing_params: parameters passed to apply_window (default: None)
+      json_path: str, path to the JSON file to store volume names (default "volumes.json")
+      
+    Usage:
+      interactive_plot_cycle_from_folder(data_folder="@Data")
+    """
+
+    plt.ion()  # Ensure interactive mode is on.
+
+    # Load JSON data early; we use the same dict throughout.
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r') as f:
+                json_data = json.load(f)
+        except Exception:
+            json_data = {}
+    else:
+        json_data = {}
+    json_data.setdefault("checked", [])
+    json_data.setdefault("exclude", [])
+
+    # Get a sorted list of npy files and filter out volumes already checked.
+    all_files = sorted([f for f in os.listdir(data_folder) if f.endswith('.npy')])
+    files = [f for f in all_files if os.path.splitext(f)[0] not in json_data["checked"]]
+    if not files:
+        print("No new volumes to display; all volumes have been checked.")
+        return None, None
+
+    current_idx = 0
+
+    def load_volume(idx):
+        filepath = os.path.join(data_folder, files[idx])
+        volume = np.load(filepath)
+        title = os.path.splitext(files[idx])[0]
+        return volume, title
+
+    current_volume, current_title = load_volume(current_idx)
+
+    # Create the figure and initial axes.
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(left=0.25, bottom=0.25)
+    if windowing_params is not None:
+        img_data = apply_window(current_volume[0, 0], *windowing_params)
+    else:
+        img_data = current_volume[0, 0]
+    image = ax.imshow(img_data, cmap='magma')
+    ax.set_title(current_title)
+    plt.colorbar(image, ax=ax)
+
+    # Create slider axes for time and slice.
+    ax_slice_slider = plt.axes([0.25, 0.15, 0.65, 0.03])
+    ax_time_slider = plt.axes([0.25, 0.1, 0.65, 0.03])
+    time_slider = Slider(ax_time_slider, 'Time', 0, current_volume.shape[0] - 1, valinit=0, valstep=1)
+    slice_slider = Slider(ax_slice_slider, 'Slice', 0, current_volume.shape[1] - 1, valinit=0, valstep=1)
+    scrolling_slider = [time_slider]  # Mutable container for the slider.
+
+    def update_image():
+        """Update the image based on the current slider values."""
+        t = int(time_slider.val)
+        s = int(slice_slider.val)
+        if windowing_params is not None:
+            new_data = apply_window(current_volume[t, s], *windowing_params)
+        else:
+            new_data = current_volume[t, s]
+        image.set_data(new_data)
+        fig.canvas.draw_idle()
+
+    def update(val, scrolling_slider, slider):
+        update_image()
+        scrolling_slider[0] = slider
+
+    time_slider.on_changed(lambda val: update(val, scrolling_slider, time_slider))
+    slice_slider.on_changed(lambda val: update(val, scrolling_slider, slice_slider))
+
+    def on_scroll(event):
+        if event.inaxes == ax_time_slider:
+            new_val = min(time_slider.val + time_slider.valstep, time_slider.valmax)
+            time_slider.set_val(new_val)
+        elif event.inaxes == ax_slice_slider:
+            new_val = min(slice_slider.val + slice_slider.valstep, slice_slider.valmax)
+            slice_slider.set_val(new_val)
+        fig.canvas.draw_idle()
+
+    def on_motion(event):
+        if event.inaxes == ax:
+            plt.gcf().canvas.set_cursor(1)
+
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+
+    # Flag to mark if the Space key was pressed.
+    pressed_space = {"flag": False}
+
+    def on_key_press(event):
+        nonlocal current_idx, current_volume, current_title, json_data
+        if event.key in [' ', 'space']:
+            pressed_space["flag"] = True
+            print(f"Space pressed for volume: {current_title}")
+        elif event.key == 'backspace':
+            if current_idx == 0:
+                print("Already at the first volume; cannot reverse further.")
+                return
+            # Reverse action:
+            current_idx -= 1
+            # Determine the title from the previous file.
+            prev_file = files[current_idx]
+            prev_title = os.path.splitext(prev_file)[0]
+            # Remove the previous volume from JSON data if present.
+            if prev_title in json_data["checked"]:
+                json_data["checked"].remove(prev_title)
+                print(f"Removed '{prev_title}' from checked.")
+            if prev_title in json_data["exclude"]:
+                json_data["exclude"].remove(prev_title)
+                print(f"Removed '{prev_title}' from exclude.")
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=4)
+            # Load the previous volume.
+            current_volume, current_title = load_volume(current_idx)
+            # Update slider limits for the new volume.
+            time_slider.valmax = current_volume.shape[0] - 1
+            time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
+            slice_slider.valmax = current_volume.shape[1] - 1
+            slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
+            # Reset slider values.
+            time_slider.set_val(0)
+            slice_slider.set_val(0)
+            ax.set_title(current_title)
+            update_image()
+            pressed_space["flag"] = False
+            print(f"Reverted to volume: {current_title}")
+        elif event.key == 'enter':
+            # Add the current volume's title to json_data.
+            if current_title not in json_data["checked"]:
+                json_data["checked"].append(current_title)
+            if pressed_space["flag"] and current_title not in json_data["exclude"]:
+                json_data["exclude"].append(current_title)
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=4)
+            print(f"Saved '{current_title}'. Checked: {json_data['checked']}")
+            if pressed_space["flag"]:
+                print(f"Also added to exclude: {json_data['exclude']}")
+
+            # Move to the next volume and update the same window.
+            current_idx += 1
+            if current_idx < len(files):
+                current_volume, current_title = load_volume(current_idx)
+                # Update slider limits for the new volume.
+                time_slider.valmax = current_volume.shape[0] - 1
+                time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
+                slice_slider.valmax = current_volume.shape[1] - 1
+                slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
+                # Reset slider values.
+                time_slider.set_val(0)
+                slice_slider.set_val(0)
+                ax.set_title(current_title)
+                update_image()
+                pressed_space["flag"] = False
+            else:
+                print("No more volumes to display.")
+
+    fig.canvas.mpl_connect('key_press_event', on_key_press)
+
+    plt.show(block=True)
+    return fig, ax
+
 
 def multiple_interactive_plots(volume_seqs, titles=None, plotting_function=interactive_plot):
     if titles is None:
@@ -980,6 +1171,176 @@ def make_gifs(ctvol, outprefix, chosen_views):
             images.append(ctvol[:,:,slicenum])
         imageio.mimsave(outprefix+'_sagittal.gif',images)
         print('\t\tdone with sagittal gif')
+
+def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None):
+    """
+    Render interactive cycling of volume sequences from several folders in a single window
+    with different subplots (one per folder). The folders are expected to contain
+    .npy files. Each .npy file is assumed to be a 4D numpy array of shape 
+    (time, slice, height, width). 
+
+    There are two unified sliders below the subplots controlling the displayed time and slice
+    indices. Keyboard events act on ALL subplots simultaneously:
+      - Pressing Enter cycles forward the volume for every folder (if available).
+      - Pressing Backspace cycles backward for every folder (if available).
+      
+    Parameters:
+      folder_list : list[str]
+          List of folder paths (each containing .npy volume files).
+      windowing_params : tuple, optional
+          If provided, applied to the volume slices via apply_window().
+      nrows : int, optional
+          Number of subplot rows (if not provided, determined automatically).
+      
+    Returns:
+      fig, axes, folder_states : tuple
+          fig       : the matplotlib figure.
+          axes      : the array of Axes.
+          folder_states: a list of dictionaries, one per folder. Each dict includes:
+                           "folder"         : folder path as string.
+                           "files"          : list of npy file names in the folder.
+                           "current_idx"    : current index into the files list.
+                           "current_volume" : current 4D volume (np.load result).
+                           "current_title"  : current file name (without extension).
+                           "ax"             : the Axes for displaying.
+                           "image_handle"   : the Image returned by imshow.
+    """
+    # Build a state dict for each folder.
+    folder_states = []
+    for folder in folder_list:
+        files = sorted([f for f in os.listdir(folder) if f.endswith('.npy')])
+        if not files:
+            print(f"No npy files found in folder: {folder}")
+            continue
+        # Load the first volume in the folder.
+        filepath = os.path.join(folder, files[0])
+        volume = np.load(filepath)
+        title = os.path.splitext(files[0])[0]
+        folder_states.append({
+            "folder": folder,
+            "files": files,
+            "current_idx": 0,
+            "current_volume": volume,
+            "current_title": title
+        })
+
+    if not folder_states:
+        print("No folders with npy volumes found.")
+        return None, None, None
+
+    num_folders = len(folder_states)
+    if nrows is None:
+        nrows = int(np.sqrt(num_folders))
+        if nrows == 0:
+            nrows = 1
+    ncols = (num_folders + nrows - 1) // nrows
+
+    # Create the overall figure and an array of axes.
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 5*nrows), squeeze=False)
+    axes_list = axes.flatten()
+
+    # For each folder, show the initial slice (time=0, slice=0)
+    for i, state in enumerate(folder_states):
+        ax = axes_list[i]
+        if windowing_params is not None:
+            img_data = apply_window(state["current_volume"][0, 0], *windowing_params)
+        else:
+            img_data = state["current_volume"][0, 0]
+        image = ax.imshow(img_data, cmap='magma')
+        ax.set_title(f"{state['current_title']} ({state['folder']})")
+        plt.colorbar(image, ax=ax)
+        state["ax"] = ax
+        state["image_handle"] = image
+
+    # Hide any extra axes.
+    for j in range(num_folders, len(axes_list)):
+        axes_list[j].axis('off')
+
+    # Create two global sliders for time and slice.
+    slider_ax_width = 0.5
+    slider_ax_height = 0.03
+    slider_left = 0.25
+    ax_slice_slider = fig.add_axes([slider_left, 0.1, slider_ax_width, slider_ax_height])
+    ax_time_slider  = fig.add_axes([slider_left, 0.05, slider_ax_width, slider_ax_height])
+    max_time = max(state["current_volume"].shape[0] for state in folder_states) - 1
+    max_slice = max(state["current_volume"].shape[1] for state in folder_states) - 1
+    time_slider = Slider(ax_time_slider, 'Time', 0, max_time, valinit=0, valstep=1)
+    slice_slider = Slider(ax_slice_slider, 'Slice', 0, max_slice, valinit=0, valstep=1)
+
+    def update_all_images(val):
+        t_val = int(time_slider.val)
+        s_val = int(slice_slider.val)
+        for state in folder_states:
+            vol = state["current_volume"]
+            # Clamp slider values to the current volume's dimensions.
+            t = min(t_val, vol.shape[0]-1)
+            s = min(s_val, vol.shape[1]-1)
+            if windowing_params is not None:
+                new_data = apply_window(vol[t, s], *windowing_params)
+            else:
+                new_data = vol[t, s]
+            state["image_handle"].set_data(new_data)
+        fig.canvas.draw_idle()
+
+    time_slider.on_changed(update_all_images)
+    slice_slider.on_changed(update_all_images)
+
+    def on_scroll(event):
+        if event.inaxes == ax_time_slider:
+            new_val = min(time_slider.val + time_slider.valstep, time_slider.valmax)
+            time_slider.set_val(new_val)
+        elif event.inaxes == ax_slice_slider:
+            new_val = min(slice_slider.val + slice_slider.valstep, slice_slider.valmax)
+            slice_slider.set_val(new_val)
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+
+    def on_key_press(event):
+        if event.key == 'enter':
+            # Cycle forward for every folder state.
+            for state in folder_states:
+                if state["current_idx"] < len(state["files"]) - 1:
+                    state["current_idx"] += 1
+                    filepath = os.path.join(state["folder"], state["files"][state["current_idx"]])
+                    new_vol = np.load(filepath)
+                    state["current_volume"] = new_vol
+                    state["current_title"] = os.path.splitext(state["files"][state["current_idx"]])[0]
+                    state["ax"].set_title(f"{state['current_title']} ({state['folder']})")
+                else:
+                    print(f"Folder '{state['folder']}': no more volumes to display.")
+            # Update the global slider maximums
+            new_max_time = max(s["current_volume"].shape[0] for s in folder_states) - 1
+            new_max_slice = max(s["current_volume"].shape[1] for s in folder_states) - 1
+            time_slider.valmax = new_max_time
+            time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
+            slice_slider.valmax = new_max_slice
+            slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
+            update_all_images(None)
+        elif event.key == 'backspace':
+            # Cycle backward for every folder state.
+            for state in folder_states:
+                if state["current_idx"] > 0:
+                    state["current_idx"] -= 1
+                    filepath = os.path.join(state["folder"], state["files"][state["current_idx"]])
+                    new_vol = np.load(filepath)
+                    state["current_volume"] = new_vol
+                    state["current_title"] = os.path.splitext(state["files"][state["current_idx"]])[0]
+                    state["ax"].set_title(f"{state['current_title']} ({state['folder']})")
+                else:
+                    print(f"Folder '{state['folder']}': already at the first volume.")
+            new_max_time = max(s["current_volume"].shape[0] for s in folder_states) - 1
+            new_max_slice = max(s["current_volume"].shape[1] for s in folder_states) - 1
+            time_slider.valmax = new_max_time
+            time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
+            slice_slider.valmax = new_max_slice
+            slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
+            update_all_images(None)
+
+    fig.canvas.mpl_connect('key_press_event', on_key_press)
+
+    plt.show(block=True)
+    return fig, axes, folder_states
 
 
 # 0 -> m -

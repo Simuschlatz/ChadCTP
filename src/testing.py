@@ -1,69 +1,42 @@
 from preprocessing import get_volume, load_folder_paths, get_2d_mask, get_largest_connected_component
 from visualization import interactive_plot, multi_vol_seq_iplot,scroll_through_all_slices, \
     interactive_plot_with_threshold, interactive_plot_with_mask, interactive_plot_with_binary_mask, \
-    interactive_plot_with_3d_mask, overlay_volumes, overlay_volume_sequence, interactive_plot_with_bilateral_filter
+    interactive_plot_with_3d_mask, overlay_volumes, overlay_volume_sequence, interactive_plot_with_bilateral_filter, \
+    interactive_plot_cycle_from_folder, multi_folder_cycle_iplot_all
 import numpy as np
 import os
-if __name__ == "__main__":
-    dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
-
-    folder_paths = load_folder_paths('small')
-    for folder_path in folder_paths[70:]: # [os.path.join(dataset_path, 'MOL-002')]: # folder_paths[13:]: 
+import pickle
         
-        volume_seq = get_volume(folder_path, 
-                                extract_brain=False,
-                                correct_motion=False,
-                                window_params='brain',
-                                filter=False,
-                                standardize=False,
-                                spatial_downsampling_factor=2, 
-                                temporal_downsampling_factor=2)
-                                
-        # interactive_plot_with_bilateral_filter(volume_seq, title=folder_path.split('/')[-1], windowing_params=(80, 160))
-        # volume_seq = get_volume(folder_path, 
-        #                         extract_brain=True,
-        #                         windowing=True,
-        #                         correct_motion=False,
-        #                         filter=True,
-        #                         spatial_downsampling_factor=1, 
-        #                         temporal_downsampling_factor=80)
-        # v2 = get_volume(folder_path + '_Registered_Filtered_3mm_20HU', 
-        #                 extract_brain=False,
-        #                 windowing=True,
-        #                 correct_motion=False,
+if __name__ == "__main__":
+
+    # multi_folder_cycle_iplot_all(["TestScans/" + sub for sub in os.listdir("TestScans")], windowing_params=(40, 80))
+    multi_folder_cycle_iplot_all(['Experiments/Data', 'Experiments/Data2'], windowing_params=(40, 80))
+    # v = np.load("TestScans/1/MOL-063.npy")
+    # print(v.shape)
+    # interactive_plot_cycle_from_folder(data_folder="Experiments/Data", json_path="Experiments/volumes.json")
+    # dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
+    # scan_ids = ["/MOL-" + s for s in ['063', '092', '098', '104', '133']]
+    # paths = [dataset_path + sid for sid in scan_ids]
+    # with open("registration_scans.pkl", "rb") as f:
+        # scans = pickle.load(f)[:len(scan_ids)]
+
+    # folder_paths = load_folder_paths('small')
+    # for folder_path in folder_paths: 
+    
+        # v1 = get_volume(folder_path, 
+        #                 extract_brain=True,
+        #                 correct_motion=True,
+        #                 window_params=(200, 400),
         #                 filter=False,
-        #                 spatial_downsampling_factor=1, 
-        #                 temporal_downsampling_factor=80)
-        interactive_plot(volume_seq)
-        # multi_vol_seq_iplot([volume_seq, v2], ['Vorgestellt', 'UniToBrain Preprocessing'])
-    # for folder_path in folder_paths[13:]: # [os.path.join(dataset_path, 'MOL-120')]:
-        # overlay_volume_sequence(np.concatenate([volume_seq, v2[1:]], axis=0))
+        #                 standardize=True,
+        #                 spatial_downsampling_factor=2, 
+        #                 temporal_downsampling_factor=2)
+        # interactive_plot(v1)
 
-        # volume_seq = get_volume(folder_path, 
-        #                         extract_brain=True,
-        #                         windowing=True,
-        #                         correct_motion=False,
-        #                         filter=False,
-        #                         spatial_downsampling_factor=2, 
-        #                         temporal_downsampling_factor=1)
-        # volume_seq2 = get_volume(folder_path, 
-        #                         extract_brain=False,
-        #                         windowing=True,
-        #                         correct_motion=False,
-        #                         filter=False,
-        #                         spatial_downsampling_factor=2, 
-        #                         temporal_downsampling_factor=7)
-        # multi_vol_seq_iplot([volume_seq, volume_seq2], ['Preprocessed', 'Original'])
-
-        # volume_seq2 =  get_volume(folder_path, 
-        #                         extract_brain=True,
-        #                         windowing=True,
-        #                         correct_motion=True,
-        #                         spatial_downsampling_factor=1, 
-        #                         temporal_downsampling_factor=7)
-        # multi_vol_seq_iplot([volume_seq, volume_seq2], ['Downsampled 2x', 'FullSize'])
-        # multi_vol_seq_iplot([volume_seq, volume_seq2], ['Extracted Brain', 'All Volume'])
-        # print(volume_seq.shape)
-        # interactive_plot(volume_seq, title=folder_path.split('/')[-1])
-        # interactive_plot_with_threshold(volume_seq, title=folder_path.split('/')[-1])
-        # interactive_plot_with_3d_mask(volume_seq, title=folder_path.split('/')[-1], apply_window=True, threshold_max=180)
+    # data_path = "Experiments/Data"
+    # check = ['206', '251', '263', '100', '92', '106', '112', '099']
+    # for scan_name in os.listdir(data_path):
+    #     if scan_name[-7:-4] not in check: continue
+    #     scan_path = os.path.join(data_path, scan_name)
+    #     v = np.load(scan_path)
+    #     interactive_plot(v, title=scan_name, windowing_params=(0, 4))

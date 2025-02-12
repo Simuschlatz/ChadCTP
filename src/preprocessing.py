@@ -67,7 +67,7 @@ def load_dcm_datasets(folder_path: str) -> list:
         raise FileNotFoundError(f"Folder {folder_path} not found")
     
     files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.dcm')])
-    print(f"Dicom files loaded, count: {len(files)}")
+    # print(f"Dicom files loaded, count: {len(files)}")
 
     return [dcmread(f) for f in files] # Pydicom datasets
 
@@ -124,13 +124,13 @@ def get_2d_mask(slice: np.ndarray, threshold_min=-25, threshold_max=150,
     # Apply gaussian blur
     slice = ndimage.gaussian_filter(slice, sigma=1)
     mask = get_threshold_mask(slice, min_val=threshold_min, max_val=threshold_max)
-    mask = ndimage.morphology.binary_erosion(mask, np.ones(structuring_element_dims))
+    mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims))
     # mask = ndimage.morphology.binary_erosion(mask, np.ones((3, 3)))
     # Remove small objects
     mask = morphology.remove_small_objects(mask, remove_small_objects_size)
     # Fill small holes
-    # mask = ndimage.morphology.binary_dilation(mask, np.ones((7, 7)))
-    # mask = ndimage.morphology.binary_fill_holes(mask)
+    # mask = ndimage.binary_dilation(mask, np.ones((7, 7)))
+    # mask = ndimage.binary_fill_holes(mask)
     return mask
 
 def get_largest_connected_component(all_masks, 
@@ -158,11 +158,11 @@ def get_largest_connected_component(all_masks,
     label_count[0] = 0
     largest_volume_mask = labels == label_count.argmax()
     # Account for 3D erosion
-    largest_volume_mask = ndimage.morphology.binary_dilation(largest_volume_mask, np.ones(connectivity_shape))
+    largest_volume_mask = ndimage.binary_dilation(largest_volume_mask, np.ones(connectivity_shape))
     for i, slice_mask in enumerate(largest_volume_mask):
         # Fill small holes, improve mask in 2d
-        slice_mask = ndimage.morphology.binary_dilation(slice_mask, np.ones(morphology_shape_2d))
-        slice_mask = ndimage.morphology.binary_fill_holes(slice_mask)
+        slice_mask = ndimage.binary_dilation(slice_mask, np.ones(morphology_shape_2d))
+        slice_mask = ndimage.binary_fill_holes(slice_mask)
         largest_volume_mask[i] = slice_mask
     # for i, slice_mask in enumerate(largest_volume_mask):
     #     largest_volume_mask[i] = ndimage.morphology.binary_dilation(slice_mask, np.ones((3, 3)))
@@ -264,7 +264,7 @@ def apply_bilateral_filter(image, sigma_space, sigma_intensity):
     Vectorized bilateral filter implementation.
     """
     # kernel_size should be twice the sigma space to avoid calculating negligible values
-    kernel_size = int(2 * sigma_space)
+    kernel_size = int(3 * sigma_space)
     half_kernel_size = kernel_size // 2
     result = np.zeros(image.shape)
     W = 0
@@ -295,7 +295,7 @@ def filter_volume(args):
         filtered_volume[i] = apply_bilateral_filter(slice, sigma_space, sigma_intensity)
     return filtered_volume
 
-def filter_volume_seq(volume_seq, sigma_space, sigma_intensity):
+def filter_volume_seq(volume_seq, sigma_space=2, sigma_intensity=15):
 
     total_time = 0
     start_time = time()
@@ -311,8 +311,8 @@ def filter_volume_seq(volume_seq, sigma_space, sigma_intensity):
     volume_seq = np.array(filtered_volumes)
     
     total_time = time() - start_time
-    print(f"Total time taken: {total_time:.2f} seconds")
-    print(f"Average time taken per volume: {total_time / len(volume_seq):.2f} seconds")
+    # print(f"Total time taken: {total_time:.2f} seconds")
+    # print(f"Average time taken per volume: {total_time / len(volume_seq):.2f} seconds")
     return volume_seq
 
 def get_skull_mask(volume: np.ndarray, threshold: int = 700) -> np.ndarray:
@@ -518,24 +518,48 @@ def register_volume_2D(target_volume: np.ndarray, reference_image: sitk.Image, s
             registered_volume[slice_idx] = target_slice
             
     return registered_volume
+
+def mask_slice(slice, threshold_min=-40, threshold_max=150, structuring_element_dims=(3, 5)):
+    smoothened = ndimage.gaussian_filter(slice, sigma=2.0)
+    # ---Simpler Version---
+    # mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=3000)
+    # mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
+    # mask = ndimage.binary_erosion(mask, np.ones((3, 3)))
+    # # Remove small objects
+    # mask = morphology.remove_small_objects(mask, 800)
+
+    mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=threshold_max)
+    mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
+    # Remove small objects
+    mask = morphology.remove_small_objects(mask, 800)
+    # Fill small holes
+    mask = ndimage.binary_dilation(mask, np.ones(structuring_element_dims), iterations=2)
+    mask = ndimage.binary_fill_holes(mask)
+    return apply_mask(slice, mask)
+
+def preprocess_slice_for_registration(slice, threshold_min=-40, threshold_max=150, structuring_element_dims=(3, 3), reg_window_min=20, reg_window_max=60):
+    masked = mask_slice(slice, threshold_min=threshold_min, threshold_max=threshold_max, structuring_element_dims=structuring_element_dims)
+    return np.clip(masked, reg_window_min, reg_window_max)
+
 def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume: np.ndarray, n_samples: int = 5, 
                lr: float = 1.0, n_iters: int = 200, relaxation_factor: float = 0.99, 
-               gradient_magnitude_tolerance: float = 1e-5, max_step: float = 4.0, min_step: float = 5e-4, 
-               weighting_scheme: str = 'inverse', spacing: tuple = (1, 1),
-               multi_res: bool = False, smoothing_sigma: float = 2.0,
+               gradient_magnitude_tolerance: float = 1e-5, max_step: float = 4.0, min_step: float = 5e-3, 
+               spacing: tuple = (1, 1), multi_res: bool = False, smoothing_sigma: float = 0.0, interpolator=sitk.sitkLinear,
+               mask=True, reg_window_min=-100, reg_window_max=300, threshold_min=0, threshold_max=500,
+               center_index=None, shrink_factors=[2, 1], smoothing_sigmas=[2, 1],
                verbose: bool = False):
     
     Y, Z, X = moving_volume.shape
     
     if n_samples > Y: n_samples = Y
     elif n_samples < 1: n_samples = 1
-    middle = Y // 2
+    middle = center_index if center_index is not None else Y // 2 + 2
     half_range = n_samples // 2
     slice_indices = np.linspace(middle - half_range, middle + half_range, n_samples, dtype=int)
     
-    # Store transforms and their weights
+
     transforms = []
-    metric_values = []
+    weights = np.zeros(n_samples)
 
     def command_iteration(method):
         if (method.GetOptimizerIteration() + 1) % 50 == 0:
@@ -543,31 +567,41 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
             print(f"Metric value: {method.GetMetricValue():.4f}")
 
     # Register each sampled slice
-    for slice_idx in slice_indices:
-        print(f"Registering slice {slice_idx} of {Y}")
-        # Get corresponding slices
-        moving_slice = moving_volume[slice_idx]
-        reference_slice = reference_volume[slice_idx]
+    for pos, slice_idx in enumerate(slice_indices):
+        if verbose:
+            print(f"Registering slice {slice_idx} of {Y}")
+        
+        # Standard preprocessing for registration
+        if mask:
+            moving_slice = preprocess_slice_for_registration(moving_volume[slice_idx], reg_window_min=reg_window_min, reg_window_max=reg_window_max, threshold_min=threshold_min, threshold_max=threshold_max)
+            fixed_slice = preprocess_slice_for_registration(reference_volume[slice_idx], reg_window_min=reg_window_min, reg_window_max=reg_window_max, threshold_min=threshold_min, threshold_max=threshold_max)
+        else:
+            moving_slice = np.clip(moving_volume[slice_idx], 0, 160)
+            fixed_slice = np.clip(reference_volume[slice_idx], 0, 160)
+            
+
         # Set min pixel value to 0 so that background aligns with pixels moved in by transformation during registration
         min_pixel_value = np.min(moving_slice)
-        moving_slice, reference_slice = moving_slice - min_pixel_value, reference_slice - min_pixel_value
+        moving_slice, fixed_slice = moving_slice - min_pixel_value, fixed_slice - min_pixel_value
+        
         if verbose:
             print(f"{min_pixel_value=}")
         # Convert to SimpleITK images
-        moving_image = sitk.GetImageFromArray(moving_slice)
-        reference_image = sitk.GetImageFromArray(reference_slice)
-        if not multi_res:
-            moving_image = sitk.DiscreteGaussian(moving_image, smoothing_sigma)
-            reference_image = sitk.DiscreteGaussian(reference_image, smoothing_sigma)
+        moving = sitk.GetImageFromArray(moving_slice)
+        fixed = sitk.GetImageFromArray(fixed_slice)
+        
+        if smoothing_sigma:
+            moving = sitk.DiscreteGaussian(moving, smoothing_sigma)
+            fixed = sitk.DiscreteGaussian(fixed, smoothing_sigma)
         
         # Set 2D spacing
-        moving_image.SetSpacing(spacing)
-        reference_image.SetSpacing(spacing)
+        moving.SetSpacing(spacing)
+        fixed.SetSpacing(spacing)
         
         # Initialize 2D transform
         initial_transform = sitk.CenteredTransformInitializer(
-            reference_image,
-            moving_image,
+            fixed,
+            moving,
             sitk.Euler2DTransform(),
             sitk.CenteredTransformInitializerFilter.GEOMETRY
         )
@@ -576,7 +610,6 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
         registration_method = sitk.ImageRegistrationMethod()
         registration_method.SetMetricAsMeanSquares()
         
-
         # Optimizer settings
         registration_method.SetOptimizerAsRegularStepGradientDescent(
             learningRate=lr,
@@ -587,19 +620,27 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
             relaxationFactor=relaxation_factor,
             
         )
-        if multi_res:
-            registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[2, 1])
-            registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[1, 2])
-            registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
 
+        if multi_res:
+            registration_method.SetShrinkFactorsPerLevel(shrinkFactors=shrink_factors)
+            registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=smoothing_sigmas)
+            registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
         registration_method.SetInitialTransform(initial_transform)
-        registration_method.SetInterpolator(sitk.sitkLinear)
-        
+        registration_method.SetInterpolator(interpolator)
+
         if verbose:
             registration_method.AddCommand(sitk.sitkIterationEvent, lambda: command_iteration(registration_method))
+
         try:
-            final_transform = registration_method.Execute(reference_image, moving_image)
+            final_transform = registration_method.Execute(fixed, moving)
+
+            # position_weight = 1 / ((slice_idx - middle) / (half_range / 2)) # The further away from the center, the lower the weight
             metric_value = registration_method.GetMetricValue()
+            # weight = 1 / ((metric_value) + 1e-10 ** 0.5) * position_weight
+            weight = 1 / (metric_value + 1e-10)
+            weights[pos] = weight
+
+
             if verbose:
                 print(f"Stopping condition: {registration_method.GetOptimizerStopConditionDescription()}")
                 print(f"Metric value: {metric_value:.4f}")
@@ -607,47 +648,19 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
             params = final_transform.GetParameters()
             center = final_transform.GetCenter()
             transforms.append((params, center))
-            metric_values.append(metric_value)
 
             # Check for extreme transformations
             angle_deg = np.degrees(params[0])  # Convert angle from radians to degrees
             tx, ty = params[1], params[2]
             
-            if abs(angle_deg) > 15 or abs(tx) > 10 or abs(ty) > 10:
+            if abs(angle_deg) > 10 or abs(tx) > 10 or abs(ty) > 10:
                 print(f"Info: Large transformation detected for slice {slice_idx}:")
                 print(f"    Angle: {angle_deg:.2f}°, Translation: ({tx:.2f}, {ty:.2f})")
             
         except RuntimeError as e:
             print(f"Registration failed for slice {slice_idx}: {e}")
             continue
-    
-    if not transforms:
-        print("No successful registrations - returning original volume")
-        return moving_volume
-    
-    # Convert metric values to weights based on chosen scheme
-    metric_values = np.array(metric_values)
-    print(metric_values)
-
-    if weighting_scheme == 'inverse':
-        # Original inverse weighting
-        weights = 1.0 / (metric_values + 1e-10)
-
-    elif weighting_scheme == 'inverse_root':
-        weights = 1.0 / (np.sqrt(metric_values) + 1e-10)
-
-    elif weighting_scheme == 'softmax':
-        # Softmax-based weighting: emphasizes better matches while maintaining non-zero weights
-        # Negative because lower metric values are better
-        weights = np.exp(-metric_values) / np.sum(np.exp(-metric_values))
-    
-    elif weighting_scheme == 'threshold':
-        # Threshold-based: only keep transforms with metric values below mean
-        mean_metric = np.mean(metric_values)
-        weights = np.where(metric_values < mean_metric, 1.0, 0.0)
-        if np.sum(weights) == 0:  # If all transforms are above mean
-            weights = np.ones_like(metric_values)
-    
+        
     # Normalize weights
     weights = weights / np.sum(weights)
     
@@ -679,42 +692,36 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
     # Apply transform to each slice of moving volume
     registered_volume = np.zeros_like(moving_volume)
     for i in range(moving_volume.shape[0]):
-        moving_slice = sitk.GetImageFromArray(moving_volume[i])
+        moving_slice = moving_volume[i]
+        min_value = np.min(moving_slice)
+        moving_slice = sitk.GetImageFromArray(moving_slice - min_value)
         registered_slice = sitk.Resample(
             moving_slice,
-            reference_image,
             final_transform,
-            sitk.sitkLinear,
-            0.0, # min_pixel_value,
+            interpolator,
+            0.0, # Min pixel value
             moving_slice.GetPixelID()
         )
         # Bring the slice back to its original value range by adding min_pixel_value
-        registered_volume[i] = sitk.GetArrayFromImage(registered_slice) + min_pixel_value
+        registered_volume[i] = sitk.GetArrayFromImage(registered_slice) + min_value
 
     return registered_volume
 
 def rigid_register_volume_sequence(volume_seq: np.ndarray, 
-                                   spacing: tuple = (5.0, 0.488281, 0.488281),
-                                   reference_index: int = 1,
-                                   n_iters: int = 1000,
-                                   n_samples: int = 1,
+                                   reference_index: int = 8,
+                                   n_iters: int = 150,
+                                   n_samples: int = 3,
                                    lr: float = 1.0,
-                                   weighting_scheme: str = 'inverse',
-                                   verbose: bool = False) -> np.ndarray:
-    """
-    Performs skull-based rigid registration on a sequence of volumes using the specified reference volume.
+                                   mask = True,
+                                   multi_res: bool = True,
+                                   smoothing_sigma: float = 0.0,
+                                   reg_clipping_vals = (0, 80),
+                                   max_step = 2.0,
+                                   relaxation_factor = 0.95,
+                                   shrink_factors = [2, 1],
+                                   smoothing_sigmas = [2, 0],
+                                   verbose: bool = True) -> np.ndarray:
 
-    Parameters:
-    - volume_seq (np.ndarray): 4D array of shape (T, Y, Z, X) representing the volume sequence.
-    - spacing (tuple): Physical spacing of the volume (Y, Z, X). Defaults to (5.0, 0.488281, 0.488281).
-    - reference_index (int): Index of the reference volume in the sequence to which other volumes will be registered.
-    - registering_structure (str): The structure used in registration. One of: 'all', 'skull', 'brain'. Defaults to 'all'.
-    - window_center (int): The center of the window in HU. Defaults to 40.
-    - window_width (int): The width of the window in HU. Defaults to 400.
-
-    Returns:
-    - np.ndarray: 4D array of registered volumes with the same shape as the input.
-    """
     if not (0 <= reference_index < volume_seq.shape[0]):
         raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
     
@@ -729,15 +736,23 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
     for i in range(volume_seq.shape[0]):
         if i == reference_index:
             continue
-            
-        print(f"Registering volume {i}")
+        if verbose:
+            print(f"Registering volume {i}")
         registered_seq[i] = register_volume_inplane_weighted(
             moving_volume=volume_seq[i],
             reference_volume=reference_volume,
             n_samples=n_samples,
             lr=lr,
             n_iters=n_iters,
-            weighting_scheme=weighting_scheme,
+            max_step=max_step,
+            relaxation_factor=relaxation_factor,
+            multi_res=multi_res,
+            smoothing_sigma=smoothing_sigma,
+            shrink_factors=shrink_factors,
+            smoothing_sigmas=smoothing_sigmas,
+            reg_window_max=reg_clipping_vals[1],
+            reg_window_min=reg_clipping_vals[0],
+            mask=mask,
             verbose=verbose,
         )
 
@@ -745,13 +760,13 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
     return registered_seq
 
 def get_volume(folder_path, 
-               window_params: tuple|str|None=(80, 160), 
+               window_params: tuple|str|None=(200, 400), 
                filter=True,
                extract_brain=True,
                standardize=True,
                correct_motion=True,
-               reference_index=0,
-               spatial_downsampling_factor=4, 
+               reference_index=3,
+               spatial_downsampling_factor=1, 
                temporal_downsampling_factor=1,
                slice_based=False,
                verbose=True) -> np.ndarray:
@@ -784,10 +799,10 @@ def get_volume(folder_path,
     ds = datasets[0]
 
     # Get the spacing of the volume sequence
-    slice_thickness = ds.SliceThickness
-    pixel_spacing = ds.PixelSpacing
-    spacing = np.array([slice_thickness, pixel_spacing[0], pixel_spacing[1]])
-    print(slice_thickness, pixel_spacing)
+    # slice_thickness = ds.SliceThickness
+    # pixel_spacing = ds.PixelSpacing
+    # print(slice_thickness, pixel_spacing)
+
     # Assume that each volume in the sequence has the same dimensions
     Y = int((datasets[-1].SliceLocation - ds.SliceLocation + 5) // ds.SliceThickness) # Height
     Z, X = ds.Rows // spatial_downsampling_factor, ds.Columns // spatial_downsampling_factor # Depth, Width
@@ -805,7 +820,7 @@ def get_volume(folder_path,
             volume_seq[t, y] = slice
 
     if extract_brain: # Calculate single brain mask for all volumes before windowing
-        volume_mask = get_3d_mask(volume_seq[0])
+        volume_mask = get_3d_mask(volume_seq[reference_index])
 
     if window_params is not None:
         if type(window_params) == str:
@@ -815,16 +830,10 @@ def get_volume(folder_path,
         volume_seq = apply_window(volume_seq, window_center, window_width)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    if filter: volume_seq = filter_volume_seq(volume_seq, 2, 12.5)
+    if filter: volume_seq = filter_volume_seq(volume_seq)
     
     if correct_motion:
-        volume_seq = rigid_register_volume_sequence(
-            volume_seq, 
-            spacing=spacing, 
-            reference_index=reference_index,
-            n_iters=200,
-            n_samples=3,
-        )
+        volume_seq = rigid_register_volume_sequence(volume_seq, reference_index=reference_index, multi_res=False, smoothing_sigma=1.0, verbose=verbose)
 
     if extract_brain: # Apply brain mask to all registered volumes
         volume_seq = apply_mask(volume_seq, volume_mask)
@@ -839,15 +848,44 @@ def get_volume(folder_path,
             volume_seq = (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
     return volume_seq
 
-def save_volume(volume, folder_path='volume.npy'):
-    np.save(folder_path, volume)
-    ic(f"Volume saved to {folder_path}")
+def save_volume(volume, file_path: str="volume.npy"):
+    # if not os.path.exists(folder_path):
+    #     os.makedirs(folder_path)
+    np.save(file_path, volume)
+    ic(f"Volume saved to {file_path}")
 
-def save_all_volumes(num_samples=10, scan_size='small'):
+def save_all_volumes(scan_size='small', save_path='Experiments/Data'):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
     # Take all volumes with scan size 'small' --> 18x16x512x512 (T, Y, Z, X)
-    for folder_path in load_folder_paths(scan_size=scan_size)[:num_samples]:
-        volume_seq = get_volume(folder_path)
-        save_volume(volume_seq, folder_path.replace('.dcm', '.npy'))
+    for folder_path in load_folder_paths(scan_size=scan_size):
+        path = os.path.join(save_path, folder_path.split('/')[-1] + '.npy')
+        if os.path.exists(path):
+            print(f"Volume {folder_path.split('/')[-1]} already exists")
+            continue
+        volume_seq = get_volume(folder_path, spatial_downsampling_factor=2, verbose=False)
+        save_volume(volume_seq, path)
+
+def sample_volumes(n_samples: int=8, random_selection: bool=False, first_index: int|None=None, scan_size='small', save_path='TestScans'):
+    from random import sample
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    paths = load_folder_paths(scan_size=scan_size)
+
+    if random_selection:
+        paths = sample(paths, n_samples)
+    elif first_index is not None:
+        paths = paths[first_index:first_index+n_samples]
+    else:
+        paths = paths[:n_samples]
+
+    for file_path in paths:
+        path = os.path.join(save_path, file_path.split('/')[-1] + '.npy')
+        if os.path.exists(path):
+            print(f"Volume {file_path.split('/')[-1]} already exists")
+            continue
+        volume_seq = get_volume(file_path, spatial_downsampling_factor=2, verbose=False)
+        save_volume(volume_seq, path)
 
 def save_selected_volumes(IDs: list, save_path: str='selected_volumes'):
     if not os.path.exists(save_path):
@@ -861,5 +899,15 @@ def save_selected_volumes(IDs: list, save_path: str='selected_volumes'):
         save_volume(volume_seq, os.path.join(save_path, f'MOL-{ID}.npy'))
 
 if __name__ == "__main__":
-    IDs = ['001', '060', '061', '062', '094','096', '097', '101', '104', '105']
-    save_selected_volumes(IDs)
+    # IDs = ['001', '060', '061', '062', '094','096', '097', '101', '104', '105']
+    # save_selected_volumes(IDs)
+    # for reference_index in [1, 3]:
+    #     save_path = f'TestScans/Data/MOL-{reference_index}'
+    #     if not os.path.exists(save_path):
+    #         os.makedirs(save_path)
+    #     for folder_path in load_folder_paths(scan_size='small'):
+    #         path = os.path.join(save_path, folder_path.split('/')[-1] + '.npy')
+    #         if os.path.exists(path):
+    #             print(f"Volume {folder_path.split('/')[-1]} already exists")
+    sample_volumes(n_samples=10, random_selection=False, first_index=0, scan_size='small', save_path='Experiments/Data2')
+    # save_all_volumes(scan_size='small', save_path='Experiments/Data2')

@@ -1,10 +1,9 @@
 if __name__ == "__main__":
-    from preprocessing import get_volume
+    from preprocessing import get_volume, save_volume, rigid_register_volume_sequence, load_folder_paths
     from scipy import ndimage
     import os
     import SimpleITK as sitk
     import numpy as np
-    from multiprocessing import freeze_support
 
     dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
 
@@ -42,6 +41,7 @@ if __name__ == "__main__":
                 gradient_magnitude_tolerance: float = 1e-5, max_step: float = 4.0, min_step: float = 5e-4, 
                 spacing: tuple = (1, 1), smoothing_sigma: float = 2.0, interpolator=sitk.sitkLinear,
                 mask=True, reg_window_min=-100, reg_window_max=300, threshold_min=0, threshold_max=500,
+                shrink_factors: list = [4, 2, 1], smoothing_sigmas: list = [3, 2, 1],
                 verbose: bool = False):
         
         Y, Z, X = moving_volume.shape
@@ -76,7 +76,7 @@ if __name__ == "__main__":
             moving_image = sitk.GetImageFromArray(moving_slice)
             fixed_image = sitk.GetImageFromArray(fixed_slice)
             
-            if smoothing_sigma:
+            if smoothing_sigma and not multi_res:
                 moving_image = sitk.DiscreteGaussian(moving_image, smoothing_sigma)
                 fixed_image = sitk.DiscreteGaussian(fixed_image, smoothing_sigma)
             
@@ -107,8 +107,8 @@ if __name__ == "__main__":
                 
             )
             if multi_res:
-                registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[2, 4])
-                registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[1, 2])
+                registration_method.SetShrinkFactorsPerLevel(shrinkFactors=shrink_factors)
+                registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=smoothing_sigmas)
                 registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
             registration_method.SetInitialTransform(initial_transform)
             registration_method.SetInterpolator(interpolator)
@@ -166,75 +166,184 @@ if __name__ == "__main__":
             registered_volume[i] = sitk.GetArrayFromImage(registered_slice) + min_value
         return registered_volume
 
+
     def mse(moving_volume: np.ndarray, reference_volume: np.ndarray):
         return np.mean(np.square(moving_volume - reference_volume))
 
-    import json
-    def write_results(results: dict):
-        with open("registration_results.json", "w") as f:
-            json.dump(results, f)
+    def mae(moving_volume: np.ndarray, reference_volume: np.ndarray):
+        return np.mean(np.abs(moving_volume - reference_volume))
+    
+    import pickle
 
+    # First 15 Minute Experiment
+    # learning_rates = [1.0]
+    # n_samples = [3]
+    # relaxation_factors = [0.99]
+    # smoothing_sigmas = [0]
+    # iterations = [100]
+    # window_min_max = [(0, 80), (20, 60), (-100, 300)]
+    # interpolators = [sitk.sitkLinear, sitk.sitkBSpline]
+    # ref_index = [0, 1, 4]
+    # multi_res = [True]
+    # mask = [True]
+    
+    # learning_rates = [1.0]
+    # n_samples = [3]
+    # relaxation_factors = [0.99]
+    # smoothing_sigmas = [0]
+    # iterations = [100]
+    # window_min_max = [(0, 80)]
+    # interpolators = [sitk.sitkLinear]
+    # ref_index = [4]
+    # multi_res = [True]
+    # mask = [False, True]
+    
+    # learning_rates = [1.0]
+    # n_samples = [3]
+    # relaxation_factors = [0.99]
+    # smoothing_sigmas = [0]
+    # iterations = [100]
+    # window_min_max = [(0, 80)]
+    # interpolators = [sitk.sitkLinear]
+    # ref_index = [4]
+    # multi_res = [False, True]
+    # mask = [True]
+    # --> Multi res was better
 
-    learning_rates = [2.0, 1.5, 1.0, 0.5]
-    n_samples = [1, 3, 5, 7, 9]
-    relaxation_factors = [0.99, 0.95, 0.9]
-    smoothing_sigmas = [2.0, 1.5, 1.0, 0.5, 0]
-    iterations = [100, 200, 500, 1000]
-    window_min_max = [(0, 80), (0, 160), (20, 60), (-100, 300)]
-    interpolators = [sitk.sitkLinear, sitk.sitkBSpline, sitk.sitkNearestNeighbor]
-    ref_index = [1, 2, 3]
-    mask = [True, False]
-    scan_ids = ["/MOL-" + s for s in ['062', '063', '092', '098', '104', '133']]
-    paths = [dataset_path + sid for sid in scan_ids]
+    learning_rates = [0.5, 1.0]
+    n_samples = [3]
+    relaxation_factors = [0.99]
+    smoothing_sigmas = [0]
+    iterations = [150]
+    window_min_max = [(0, 80)]
+    interpolators = [sitk.sitkLinear]
+    ref_index = [2] # [2, 4, 8] without temporal downsampling
+    multi_res = [True]
+    mask = [True]
+    shrink_factors = [[2, 1], [2, 1]]
+    smoothing_sigmas = [[2, 1], [2, 0]]
+    # --> ref_index = 2 was best
+
+    scan_ids = ["/MOL-" + s for s in ['063', '092']]
+    # ---------------------------VOLUME LOADING--------------------------------
+    import random
+    all_paths = load_folder_paths(scan_size='small')
+    # paths = [dataset_path + sid for sid in scan_ids] + random.sample(all_paths, 5)
+    paths = random.sample(all_paths, 5)
     print("loading scans")
-    scans = []
-    for path in paths:
-        scans.append(get_volume(path, 
-                    extract_brain=False, 
-                    filter=True, 
-                    window_params=None, 
-                    correct_motion=False, 
-                    standardize=False, 
-                    spatial_downsampling_factor=2, 
-                    temporal_downsampling_factor=1,
-                    verbose=False
-                    )
-                    )
+    # if os.path.exists("registration_scans.pkl"):
+    #     with open("registration_scans.pkl", "rb") as f:
+    #         scans = pickle.load(f)[:len(scan_ids)]
+    # else:
+    scans = [get_volume(path, 
+            extract_brain=False, 
+            filter=True, 
+            window_params=None, 
+            correct_motion=False, 
+            standardize=False, 
+            spatial_downsampling_factor=2, 
+            temporal_downsampling_factor=2,
+            verbose=False
+            ) for path in paths]    
+
+        # with open("registration_scans.pkl", "wb") as f:
+        #     pickle.dump(scans, f)
+    # ---------------------------PRINTS--------------------------------
+    print(f"{len(scans)}, {len(scans[0])}, {len(learning_rates)}, {len(iterations)}, {len(n_samples)}, {len(relaxation_factors)}, {len(smoothing_sigmas)}, {len(interpolators)}, {len(mask)}, {len(window_min_max)}, {len(ref_index)}, {len(multi_res)}")
+    total = 7 * len(learning_rates) * len(iterations) * len(n_samples) * len(relaxation_factors) * len(smoothing_sigmas) * \
+        len(interpolators) * len(mask) * len(window_min_max) * len(ref_index) * len(multi_res) * len(scans) * len(scans[0])
+    print(f"Total experiments: {total}")
+    print(f"time eta: {total * 3 / 60} minutes")
+
+    def write_results(results):
+        with open("reg_exp_results.pkl", "wb") as f:
+            pickle.dump(results, f)
+    # ---------------------------RUNNING EXPERIMENTS--------------------------------
     print("running experiments")
-    results = {}
+    results = []
+    from time import time
+    start_time = time()
     # Experiment
+    counter = 0
     for lr in learning_rates:
-        for i in iterations:
-            for n in n_samples:
-                for relax in relaxation_factors:
-                    for multi_res in [True, False]:
-                        for sigma in smoothing_sigmas if not multi_res else [0]:
-                            for interp in interpolators:
-                                for (window_min, window_max) in window_min_max:
-                                    for m in mask:
-                                        for v_seq in scans:
-                                            for ref_i in ref_index:
-                                                results[(ref_i, lr, n, relax, sigma, interp, m, (window_min, window_max))] = []
-                                                v_ref = v_seq[ref_i]
-                                                mean_metric = 0
-                                                for moving_idx in range(len(v_seq)):
-                                                    if moving_idx == ref_i:
-                                                        continue
-                                                    registered = experiment_reg(
-                                                                                v_seq[moving_idx], 
-                                                                                v_ref, 
-                                                                                lr=lr, 
-                                                                                n_iters=i,
-                                                                                n_samples=n, 
-                                                                                relaxation_factor=relax,
-                                                                                multi_res=multi_res,
-                                                                                smoothing_sigma=sigma, 
-                                                                                interpolator=interp,
-                                                                                mask=m,
-                                                                                reg_window_min=window_min,
-                                                                                reg_window_max=window_max
-                                                                                )
-                                                    metric = mse(np.clip(registered, -10, 60), np.clip(v_ref, -10, 60))
-                                                    mean_metric += metric / (len(v_seq) - 1)
-                                                results[(ref_i, lr, n, relax, sigma, interp, m, (window_min, window_max))].append(mean_metric)
-            write_results(results)
+        # for i in iterations:
+        for n in n_samples:
+            for relax in relaxation_factors:
+                for m_r in multi_res:
+                    sigma = 0 if m_r else 1.0
+                    # i = 150 if m_r else 300
+                    # for sigma in smoothing_sigmas if not multi_res else [0]:
+                    for interp in interpolators:
+                        for (window_min, window_max) in window_min_max:
+                            for m in mask:
+                                for multi_res_index in range(len(shrink_factors)):
+                                    i = 150
+                                    for ref_i in ref_index:
+                                        # Mean over all sequences
+                                        total_mean_metric = 0
+                                        # For more information about sequence-specific metrics
+                                        total_metrics = {}
+                                        for v_seq, seq_id in zip(scans, scan_ids):
+                                            registered_seq = rigid_register_volume_sequence(v_seq, ref_i, multi_res=m_r, mask=m, shrink_factors=shrink_factors[multi_res_index], smoothing_sigmas=smoothing_sigmas[multi_res_index], verbose=False)
+                                            # registered_seq = np.zeros_like(v_seq)
+                                            # registered_seq[ref_i] = v_seq[ref_i]
+                                            # # Metric for each volume in the sequence
+                                            # sequence_metrics = []
+                                            # # Mean over all volumes in the sequence
+                                            # sequence_mean_metric = 0
+
+                                            # v_ref = v_seq[ref_i]
+                                            # for moving_idx in range(len(v_seq)):
+                                            #     if moving_idx == ref_i:
+                                            #         continue
+                                            #     registered = experiment_reg(
+                                            #                                 v_seq[moving_idx], 
+                                            #                                 v_ref, 
+                                            #                                 lr=lr, 
+                                            #                                 n_iters=i,
+                                            #                                 n_samples=n, 
+                                            #                                 relaxation_factor=relax,
+                                            #                                 multi_res=m_r,
+                                            #                                 smoothing_sigma=sigma, 
+                                            #                                 interpolator=interp,
+                                            #                                 mask=m,
+                                            #                                 reg_window_min=window_min,
+                                            #                                 reg_window_max=window_max,
+                                            #                                 shrink_factors=shrink_factors[multi_res_index],
+                                            #                                 smoothing_sigmas=smoothing_sigmas[multi_res_index]
+                                            #                                 )
+                                            #     registered_seq[moving_idx] = registered
+                                            #     metric = mse(np.clip(registered, -10, 60), np.clip(v_ref, -10, 60))
+                                            #     sequence_metrics.append(metric)
+                                            #     sequence_mean_metric += metric / (len(v_seq) - 1)
+
+                                                # counter += 1
+                                            save_volume(registered_seq, f"TestScans/{multi_res_index+1}/{seq_id}.npy")
+                                            # total_metrics[seq_id] = (sequence_mean_metric, np.std(sequence_metrics))
+                                            # total_mean_metric += sequence_mean_metric / len(scan_ids)
+                                            total_metrics[seq_id] = mse(registered_seq, scans[0])
+                                            total_mean_metric += mse(registered_seq, scans[0]) / len(scan_ids)
+
+                                        result = {
+                                                'total_mean_metric': total_mean_metric,
+                                                'total_metrics': total_metrics,
+                                                'reference_index': ref_i, 
+                                                'learning_rate': lr, 
+                                                'iterations': i,
+                                                'n_samples': n, 
+                                                'relaxation_factor': relax, 
+                                                'multi_res': m_r, 
+                                                'smoothing_sigma': sigma, 
+                                                'interpolator': interp, 
+                                                'mask': m, 
+                                                'window_params': (window_min, window_max)
+                                                }
+                                        results.append(result)
+                                        if counter < 20:
+                                            print(result)
+                                    # print(f'update: {counter / total * 100:.1f}% done')
+                                    # print(f"time eta: {(time() - start_time) * (total / counter - 1) / 60:.4f} minutes")
+                        # write_results(results)
+    end_time = time()
+    print(f"Time taken: {end_time - start_time} / 60 minutes")
+    print([(r['total_mean_metric'], r['total_metrics'], ) for r in results])
