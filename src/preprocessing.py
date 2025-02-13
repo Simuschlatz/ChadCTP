@@ -519,14 +519,16 @@ def register_volume_2D(target_volume: np.ndarray, reference_image: sitk.Image, s
             
     return registered_volume
 
-def mask_slice(slice, threshold_min=-40, threshold_max=150, structuring_element_dims=(3, 5)):
+def mask_slice(slice, threshold_min=-40, threshold_max=400, structuring_element_dims=(3, 3)):
     smoothened = ndimage.gaussian_filter(slice, sigma=2.0)
     # ---Simpler Version---
-    # mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=3000)
-    # mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
-    # mask = ndimage.binary_erosion(mask, np.ones((3, 3)))
-    # # Remove small objects
-    # mask = morphology.remove_small_objects(mask, 800)
+    mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=3000)
+    mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
+    # Remove small objects
+    mask = morphology.remove_small_objects(mask, 800)
+    # mask=ndimage.binary_dilation(mask, np.ones(structuring_element_dims), iterations=1)
+    mask = ndimage.binary_fill_holes(mask)
+    return apply_mask(slice, mask)
 
     mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=threshold_max)
     mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
