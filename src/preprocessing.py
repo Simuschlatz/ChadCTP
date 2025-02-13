@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor
 from time import time
 
 dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
-num_samples = 10
+
 def time_benchmark(func):
     def wrapper(*args, **kwargs):
         t0 = time()
@@ -153,7 +153,7 @@ def get_largest_connected_component(all_masks,
     # Largest connected is found in 3d, not 2d. This is because some lower slices of the brain contain multiple
     # unconnected brain components that would be removed if the largest connected component was found in 2d
     label_count = np.bincount(labels.ravel().astype(int))
-    ic(label_count)
+    # ic(label_count)
     # Exclude background
     label_count[0] = 0
     largest_volume_mask = labels == label_count.argmax()
@@ -168,13 +168,13 @@ def get_largest_connected_component(all_masks,
     #     largest_volume_mask[i] = ndimage.morphology.binary_dilation(slice_mask, np.ones((3, 3)))
     return largest_volume_mask
 
-@time_benchmark
 def get_3d_mask(volume: np.ndarray,
                 threshold_min=-25, threshold_max=150, 
                 remove_small_objects_size=500, 
                 morphology_shape_2d=(1, 7),
                 morphology_shape_3d=(3, 3, 3),
-                connectivity_shape_3d=(3, 3, 3)
+                connectivity_shape_3d=(3, 3, 3),
+                verbose=False
                 ):
     """
     Performs brain extraction on a 3D volume using thresholding, 2D and 3D morphological operations, 
@@ -200,8 +200,9 @@ def get_3d_mask(volume: np.ndarray,
 
     elif downsampling_factor > 1:
         morphology_shape_2d = (1, max(2, morphology_shape_2d[1] // downsampling_factor))
-        print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting morphology_shape_2d from {morphology_shape_2d} to {(1, max(2, morphology_shape_2d[1] // downsampling_factor))}")
-        print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting remove_small_objects_size from {remove_small_objects_size} to {remove_small_objects_size // downsampling_factor**2}")
+        if verbose:
+            print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting morphology_shape_2d from {morphology_shape_2d} to {(1, max(2, morphology_shape_2d[1] // downsampling_factor))}")
+            print(f"Info: Downsampling detected ({downsampling_factor}x), adjusting remove_small_objects_size from {remove_small_objects_size} to {remove_small_objects_size // downsampling_factor**2}")
         remove_small_objects_size = remove_small_objects_size // downsampling_factor**2
 
     volume_mask = np.array([get_2d_mask(s, 
@@ -295,7 +296,7 @@ def filter_volume(args):
         filtered_volume[i] = apply_bilateral_filter(slice, sigma_space, sigma_intensity)
     return filtered_volume
 
-def filter_volume_seq(volume_seq, sigma_space=2, sigma_intensity=15):
+def filter_volume_seq(volume_seq, sigma_space=3, sigma_intensity=10):
 
     total_time = 0
     start_time = time()
@@ -530,6 +531,7 @@ def mask_slice(slice, threshold_min=-40, threshold_max=400, structuring_element_
     mask = ndimage.binary_fill_holes(mask)
     return apply_mask(slice, mask)
 
+
     mask = get_threshold_mask(smoothened, min_val=threshold_min, max_val=threshold_max)
     mask = ndimage.binary_erosion(mask, np.ones(structuring_element_dims), iterations=2)
     # Remove small objects
@@ -546,9 +548,9 @@ def preprocess_slice_for_registration(slice, threshold_min=-40, threshold_max=15
 def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume: np.ndarray, n_samples: int = 5, 
                lr: float = 1.0, n_iters: int = 200, relaxation_factor: float = 0.99, 
                gradient_magnitude_tolerance: float = 1e-5, max_step: float = 4.0, min_step: float = 5e-3, 
-               spacing: tuple = (1, 1), multi_res: bool = False, smoothing_sigma: float = 0.0, interpolator=sitk.sitkLinear,
+               spacing: tuple = (1, 1), multi_res: bool = False, smoothing_sigma: float = 1.0, interpolator=sitk.sitkLinear,
                mask=True, reg_window_min=-100, reg_window_max=300, threshold_min=0, threshold_max=500,
-               center_index=None, shrink_factors=[2, 1], smoothing_sigmas=[2, 1],
+               center_index=None, shrink_factors=[2, 1], smoothing_sigmas=[2, 0],
                verbose: bool = False):
     
     Y, Z, X = moving_volume.shape
@@ -710,16 +712,16 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
     return registered_volume
 
 def rigid_register_volume_sequence(volume_seq: np.ndarray, 
-                                   reference_index: int = 8,
-                                   n_iters: int = 150,
+                                   reference_index: int = 2,
+                                   n_iters: int = 250,
                                    n_samples: int = 3,
-                                   lr: float = 1.0,
+                                   lr: float = 0.1,
                                    mask = True,
                                    multi_res: bool = True,
                                    smoothing_sigma: float = 0.0,
                                    reg_clipping_vals = (0, 80),
-                                   max_step = 2.0,
-                                   relaxation_factor = 0.95,
+                                   max_step = 0.0625,
+                                   relaxation_factor = 0.5,
                                    shrink_factors = [2, 1],
                                    smoothing_sigmas = [2, 0],
                                    verbose: bool = True) -> np.ndarray:
@@ -728,8 +730,8 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
         raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
     
     reference_volume = volume_seq[reference_index]
-
-    print(f"Reference volume: {reference_volume.shape}")
+    if verbose:
+        print(f"Reference volume: {reference_volume.shape}")
     # Initialize the output array
     registered_seq = np.empty_like(volume_seq)
     registered_seq[reference_index] = volume_seq[reference_index]
@@ -757,8 +759,8 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
             mask=mask,
             verbose=verbose,
         )
-
-    print("All registrations completed.")
+    if verbose:
+        print("All registrations completed.")
     return registered_seq
 
 def get_volume(folder_path, 
@@ -832,10 +834,11 @@ def get_volume(folder_path,
         volume_seq = apply_window(volume_seq, window_center, window_width)
         if verbose: ic(volume_seq.max(), volume_seq.min(), volume_seq.dtype)
 
-    if filter: volume_seq = filter_volume_seq(volume_seq)
+    if filter: 
+        volume_seq = filter_volume_seq(volume_seq)
     
     if correct_motion:
-        volume_seq = rigid_register_volume_sequence(volume_seq, reference_index=reference_index, multi_res=False, smoothing_sigma=1.0, verbose=verbose)
+        volume_seq = rigid_register_volume_sequence(volume_seq, reference_index=reference_index, verbose=verbose)
 
     if extract_brain: # Apply brain mask to all registered volumes
         volume_seq = apply_mask(volume_seq, volume_mask)
@@ -850,23 +853,12 @@ def get_volume(folder_path,
             volume_seq = (volume_seq - np.mean(volume_seq)) / np.std(volume_seq)
     return volume_seq
 
-def save_volume(volume, file_path: str="volume.npy"):
+def save_volume(volume, file_path: str="volume.npy", verbose=True):
     # if not os.path.exists(folder_path):
     #     os.makedirs(folder_path)
     np.save(file_path, volume)
-    ic(f"Volume saved to {file_path}")
-
-def save_all_volumes(scan_size='small', save_path='Experiments/Data'):
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    # Take all volumes with scan size 'small' --> 18x16x512x512 (T, Y, Z, X)
-    for folder_path in load_folder_paths(scan_size=scan_size):
-        path = os.path.join(save_path, folder_path.split('/')[-1] + '.npy')
-        if os.path.exists(path):
-            print(f"Volume {folder_path.split('/')[-1]} already exists")
-            continue
-        volume_seq = get_volume(folder_path, spatial_downsampling_factor=2, verbose=False)
-        save_volume(volume_seq, path)
+    if verbose:
+        print(f"Volume saved to {file_path}")
 
 def sample_volumes(n_samples: int=8, random_selection: bool=False, first_index: int|None=None, scan_size='small', save_path='TestScans'):
     from random import sample
@@ -900,6 +892,18 @@ def save_selected_volumes(IDs: list, save_path: str='selected_volumes'):
         volume_seq = get_volume(folder_path, spatial_downsampling_factor=2)
         save_volume(volume_seq, os.path.join(save_path, f'MOL-{ID}.npy'))
 
+def save_all_volumes(scan_size='small', save_path='Experiments/Data'):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    # Take all volumes with scan size 'small' --> 18x16x512x512 (T, Y, Z, X)
+    for folder_path in load_folder_paths(scan_size=scan_size):
+        path = os.path.join(save_path, folder_path.split('/')[-1] + '.npy')
+        if os.path.exists(path):
+            print(f"Volume {folder_path.split('/')[-1]} already exists")
+            continue
+        volume_seq = get_volume(folder_path, spatial_downsampling_factor=2, verbose=False)
+        save_volume(volume_seq, path)
+
 if __name__ == "__main__":
     # IDs = ['001', '060', '061', '062', '094','096', '097', '101', '104', '105']
     # save_selected_volumes(IDs)
@@ -911,5 +915,5 @@ if __name__ == "__main__":
     #         path = os.path.join(save_path, folder_path.split('/')[-1] + '.npy')
     #         if os.path.exists(path):
     #             print(f"Volume {folder_path.split('/')[-1]} already exists")
-    sample_volumes(n_samples=10, random_selection=False, first_index=0, scan_size='small', save_path='Experiments/Data2')
-    # save_all_volumes(scan_size='small', save_path='Experiments/Data2')
+    # sample_volumes(n_samples=10, random_selection=False, first_index=0, scan_size='small', save_path='Experiments/Data3')
+    save_all_volumes(scan_size='small', save_path='Experiments/PreprocessedData')

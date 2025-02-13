@@ -14,13 +14,13 @@ from icecream import ic
 import numpy as np
 import os
 
-def render_volume_slices(volume, cmap='magma', figsize=(12, 12)):
+def render_volume_slices(volume, cmap='grey', figsize=(12, 12)):
     """
     Renders all slices of a 3D volume with no gaps between images.
     
     Parameters:
     - volume: 3D numpy array representing the volume
-    - cmap: colormap for the images (default: 'magma')
+    - cmap: colormap for the images (default: 'grey')
     - figsize: size of the figure (default: (12, 12))
     
     Returns:
@@ -43,7 +43,7 @@ def render_volume_slices(volume, cmap='magma', figsize=(12, 12)):
     fig.patch.set_facecolor('black')
     plt.show(block=True)
 
-def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True):
+def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True, cmap='grey'):
     t, y, z, x = volume_seq.shape
     # Reshape the 4D volume sequence into a 3D array
     volume = volume_seq.reshape((t * y, z, x))
@@ -56,7 +56,7 @@ def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True):
     plt.title(title)
     
     # Display the initial slice
-    img = ax.imshow(volume[0], cmap='magma')
+    img = ax.imshow(volume[0], cmap=cmap)
     plt.colorbar(img)
     
     # Create the slider
@@ -76,14 +76,14 @@ def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True):
     
     return fig, ax
 
-def interactive_plot(volume_seq, title="", show=True, windowing_params=None):
+def interactive_plot(volume_seq, title="", cmap='grey', show=True, windowing_params=None):
     plt.ion()  # Turn on interactive mode
     fig, ax = plt.subplots()
     plt.subplots_adjust(left=0.25, bottom=0.25)
     if windowing_params is not None:
-        image = ax.imshow(apply_window(volume_seq[0, 0], *windowing_params), cmap='magma')
+        image = ax.imshow(apply_window(volume_seq[0, 0], *windowing_params), cmap=cmap)
     else:
-        image = ax.imshow(volume_seq[0, 0], cmap='magma')
+        image = ax.imshow(volume_seq[0, 0], cmap=cmap)
     plt.title(title)
 
     ax_slice_slider = plt.axes([0.25, 0.15, 0.65, 0.03])
@@ -123,14 +123,15 @@ def interactive_plot(volume_seq, title="", show=True, windowing_params=None):
         plt.show(block=True)
     return fig, ax
 
-def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing_params=None, json_path="volumes.json"):
+def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing_params=None, json_path="volumes.json", cmap='grey'):
     """
     Cycle through npy volume files stored in the provided folder. Each volume is assumed 
     to be a 4D numpy array with shape (time, slice, height, width).
 
     The plot displays the current volume with interactive sliders for time and slice.
     A key press listener is attached so that:
-      - Pressing Space sets a flag.
+      - Pressing Space adds the current volume to "exclude" and cycles to next volume.
+      - Pressing Shift adds the current volume to "re-register" and cycles to next volume.
       - Pressing Enter saves the current volume title (derived from the filename, without extension)
         to a JSON file. The title is always added to the "checked" category and, if the Space key was pressed,
         it is also added to "exclude". In addition, if volumes have already been processed 
@@ -161,6 +162,7 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
         json_data = {}
     json_data.setdefault("checked", [])
     json_data.setdefault("exclude", [])
+    json_data.setdefault("re-register", [])
 
     # Get a sorted list of npy files and filter out volumes already checked.
     all_files = sorted([f for f in os.listdir(data_folder) if f.endswith('.npy')])
@@ -186,7 +188,7 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
         img_data = apply_window(current_volume[0, 0], *windowing_params)
     else:
         img_data = current_volume[0, 0]
-    image = ax.imshow(img_data, cmap='magma')
+    image = ax.imshow(img_data, cmap=cmap)
     ax.set_title(current_title)
     plt.colorbar(image, ax=ax)
 
@@ -217,10 +219,10 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
 
     def on_scroll(event):
         if event.inaxes == ax_time_slider:
-            new_val = min(time_slider.val + time_slider.valstep, time_slider.valmax)
+            new_val = min(time_slider.val + event.step, time_slider.valmax)
             time_slider.set_val(new_val)
         elif event.inaxes == ax_slice_slider:
-            new_val = min(slice_slider.val + slice_slider.valstep, slice_slider.valmax)
+            new_val = min(slice_slider.val + event.step, slice_slider.valmax)
             slice_slider.set_val(new_val)
         fig.canvas.draw_idle()
 
@@ -231,14 +233,50 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
     fig.canvas.mpl_connect('scroll_event', on_scroll)
     fig.canvas.mpl_connect('motion_notify_event', on_motion)
 
-    # Flag to mark if the Space key was pressed.
-    pressed_space = {"flag": False}
-
     def on_key_press(event):
         nonlocal current_idx, current_volume, current_title, json_data
         if event.key in [' ', 'space']:
-            pressed_space["flag"] = True
-            print(f"Space pressed for volume: {current_title}")
+            # Add current volume to checked and exclude lists
+            if current_title not in json_data["checked"]:
+                json_data["checked"].append(current_title)
+            if current_title not in json_data["exclude"]:
+                json_data["exclude"].append(current_title)
+            
+            # Save JSON data
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=4)
+            print(f"Added '{current_title}' to exclude and checked lists")
+
+            # Move to next volume
+            current_idx += 1
+            if current_idx < len(files):
+                current_volume, current_title = load_volume(current_idx)
+                ax.set_title(current_title)
+                update_image()
+            else:
+                print("No more volumes to display.")
+
+        elif event.key == 'shift':
+            # Add current volume to checked and register lists
+            if current_title not in json_data["checked"]:
+                json_data["checked"].append(current_title)
+            if current_title not in json_data["re-register"]:
+                json_data["re-register"].append(current_title)
+            
+            # Save JSON data
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=4)
+            print(f"Added '{current_title}' to re-register and checked lists")
+
+            # Move to next volume
+            current_idx += 1
+            if current_idx < len(files):
+                current_volume, current_title = load_volume(current_idx)
+                ax.set_title(current_title)
+                update_image()
+            else:
+                print("No more volumes to display.")
+
         elif event.key == 'backspace':
             if current_idx == 0:
                 print("Already at the first volume; cannot reverse further.")
@@ -255,49 +293,30 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
             if prev_title in json_data["exclude"]:
                 json_data["exclude"].remove(prev_title)
                 print(f"Removed '{prev_title}' from exclude.")
+            if prev_title in json_data["re-register"]:
+                json_data["re-register"].remove(prev_title)
+                print(f"Removed '{prev_title}' from re-register.")
             with open(json_path, 'w') as f:
                 json.dump(json_data, f, indent=4)
             # Load the previous volume.
             current_volume, current_title = load_volume(current_idx)
-            # Update slider limits for the new volume.
-            time_slider.valmax = current_volume.shape[0] - 1
-            time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
-            slice_slider.valmax = current_volume.shape[1] - 1
-            slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
-            # Reset slider values.
-            time_slider.set_val(0)
-            slice_slider.set_val(0)
             ax.set_title(current_title)
             update_image()
-            pressed_space["flag"] = False
             print(f"Reverted to volume: {current_title}")
         elif event.key == 'enter':
             # Add the current volume's title to json_data.
             if current_title not in json_data["checked"]:
                 json_data["checked"].append(current_title)
-            if pressed_space["flag"] and current_title not in json_data["exclude"]:
-                json_data["exclude"].append(current_title)
             with open(json_path, 'w') as f:
                 json.dump(json_data, f, indent=4)
-            print(f"Saved '{current_title}'. Checked: {json_data['checked']}")
-            if pressed_space["flag"]:
-                print(f"Also added to exclude: {json_data['exclude']}")
+            print(f"Saved '{current_title}' to checked list")
 
             # Move to the next volume and update the same window.
             current_idx += 1
             if current_idx < len(files):
                 current_volume, current_title = load_volume(current_idx)
-                # Update slider limits for the new volume.
-                time_slider.valmax = current_volume.shape[0] - 1
-                time_slider.ax.set_xlim(time_slider.valmin, time_slider.valmax)
-                slice_slider.valmax = current_volume.shape[1] - 1
-                slice_slider.ax.set_xlim(slice_slider.valmin, slice_slider.valmax)
-                # Reset slider values.
-                time_slider.set_val(0)
-                slice_slider.set_val(0)
                 ax.set_title(current_title)
                 update_image()
-                pressed_space["flag"] = False
             else:
                 print("No more volumes to display.")
 
@@ -307,13 +326,13 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
     return fig, ax
 
 
-def multiple_interactive_plots(volume_seqs, titles=None, plotting_function=interactive_plot):
+def multiple_interactive_plots(volume_seqs, titles=None, plotting_function=interactive_plot, cmap='grey'):
     if titles is None:
         titles = [f"Volume {i+1}" for i in range(len(volume_seqs))]
     
     figures = []
     for volume_seq, title in zip(volume_seqs, titles):
-        fig, ax = plotting_function(volume_seq, title, show=False)
+        fig, ax = plotting_function(volume_seq, title, cmap=cmap, show=False)
         figures.append(fig)
     
     plt.show(block=False)
@@ -323,7 +342,7 @@ def multiple_interactive_plots(volume_seqs, titles=None, plotting_function=inter
         plt.close(fig)
     plt.ioff()  # Turn off interactive mode
 
-def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
+def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None, cmap='grey'):
     """
     Renders multiple interactive plots in one scene with two unified sliders
     controlling all plots
@@ -353,7 +372,7 @@ def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
     for i, (volume_seq, title) in enumerate(zip(volume_seqs, titles)):
         # row, col = divmod(i, ncols)
         ax = axes[i] #if nrows == 1 else axes[row, col]
-        image = ax.imshow(volume_seq[0, 0], cmap='magma')
+        image = ax.imshow(volume_seq[0, 0], cmap=cmap)
         ax.set_title(title)
         plt.colorbar(image, ax=ax)
         images.append(image)
@@ -393,7 +412,7 @@ def multi_vol_seq_iplot(volume_seqs, titles=None, nrows=None):
 
     plt.show(block=True)
 
-def interactive_plot_with_threshold(volume_seq, title="", show=True, min_thresh=-40, max_thresh=120, apply_window=True):
+def interactive_plot_with_threshold(volume_seq, title="", cmap='grey', show=True, min_thresh=-40, max_thresh=120, apply_window=True):
 
     """Like interactive_plot but with additional threshold sliders that show a binary mask"""
     plt.ion()  # Turn on interactive mode
@@ -402,9 +421,9 @@ def interactive_plot_with_threshold(volume_seq, title="", show=True, min_thresh=
     
     # Original image on left
     if apply_window:
-        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap='magma')
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=cmap)
     else:
-        image = ax1.imshow(volume_seq[0, 0], cmap='magma')
+        image = ax1.imshow(volume_seq[0, 0], cmap=cmap)
     ax1.set_title(f"{title} - Original")
     # plt.colorbar(image, ax=ax1)
     
@@ -471,7 +490,7 @@ def interactive_plot_with_threshold(volume_seq, title="", show=True, min_thresh=
         plt.show(block=True)
     return fig, (ax1, ax2)
 
-def interactive_plot_with_mask(volume_seq, title="", show=True, initial_min_objects=500, threshold_min=-25, threshold_max=150, apply_window=True):
+def interactive_plot_with_mask(volume_seq, title="", cmap='grey', show=True, initial_min_objects=500, threshold_min=-25, threshold_max=150, apply_window=True):
     """Like interactive_plot but shows the mask from get_mask with adjustable min_objects parameter"""
     plt.ion()  # Turn on interactive mode
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 8))
@@ -479,9 +498,9 @@ def interactive_plot_with_mask(volume_seq, title="", show=True, initial_min_obje
     
     # Original image on left
     if apply_window:
-        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap='magma')
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=cmap)
     else:
-        image = ax1.imshow(volume_seq[0, 0], cmap='magma')
+        image = ax1.imshow(volume_seq[0, 0], cmap=cmap)
     ax1.set_title(f"{title} - Original")
     
     # Mask in middle
@@ -497,9 +516,9 @@ def interactive_plot_with_mask(volume_seq, title="", show=True, initial_min_obje
     # Masked image on right
     masked_img = volume_seq[0, 0] * mask_img
     if apply_window:
-        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap='magma')
+        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap=cmap)
     else:
-        masked_image = ax3.imshow(masked_img, cmap='magma')
+        masked_image = ax3.imshow(masked_img, cmap=cmap)
     ax3.set_title(f"{title} - Masked Brain")
 
     # Create sliders
@@ -590,7 +609,7 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
                                  initial_morph_y=3, initial_morph_x=3, initial_morph_z=3,
                                  initial_conn_y=3, initial_conn_x=3, initial_conn_z=3,
                                  apply_window=True,
-                                 colormap='magma'):
+                                 cmap='grey'):
     """Like interactive_plot_with_mask but uses get_3d_mask with adjustable 3D morphology and connectivity parameters"""
     plt.ion()  # Turn on interactive mode
     
@@ -607,9 +626,9 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
     
     # Original image on left
     if apply_window:
-        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=colormap)
+        image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=cmap)
     else:
-        image = ax1.imshow(volume_seq[0, 0], cmap=colormap)
+        image = ax1.imshow(volume_seq[0, 0], cmap=cmap)
     # Add colorbar below image
     plt.colorbar(image, cax=cax1, orientation='horizontal')
     ax1.set_title(f"{title} - Original")
@@ -641,9 +660,9 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
     # Masked image on right
     masked_img = apply_mask(volume_seq[0, 0], volume_masks[0][0])
     if apply_window:
-        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap=colormap)
+        masked_image = ax3.imshow(np.clip(masked_img, a_min=-40, a_max=120), cmap=cmap)
     else:
-        masked_image = ax3.imshow(masked_img, cmap=colormap)
+        masked_image = ax3.imshow(masked_img, cmap=cmap)
     # Add colorbar below masked image
     plt.colorbar(masked_image, cax=cax3, orientation='horizontal')
     ax3.set_title(f"{title} - Masked Brain")
@@ -795,7 +814,7 @@ def interactive_plot_with_binary_mask(volume_seq, volume_mask, title="", show=Tr
     image = ax.imshow(volume_seq[0, 0], cmap='gray')
     
     # Overlay the initial mask with transparency in grayscale
-    mask_overlay = ax.imshow(volume_mask[0], cmap='magma', alpha=0.5)
+    mask_overlay = ax.imshow(volume_mask[0], cmap='grey', alpha=0.5)
     
     ax.set_title(title)
     
@@ -857,7 +876,7 @@ def save_slices_with_mask(volume_seq, folder_path):
         fig, ax = plt.subplots()
         
         # Display the initial volume slice
-        image = ax.imshow(slice, cmap='magma')
+        image = ax.imshow(slice, cmap='grey')
         
         # Overlay the initial mask with transparency in grayscale
         mask_overlay = ax.imshow(volume_mask[i], cmap='gray', alpha=0.2)
@@ -870,7 +889,7 @@ def save_slices_with_mask(volume_seq, folder_path):
         plt.close()
 
 
-def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, initial_sigma_space=3.0, initial_sigma_intensity=15, windowing_params=(80, 160)):
+def interactive_plot_with_bilateral_filter(volume_seq, title="", cmap='grey', show=True, initial_sigma_space=3.0, initial_sigma_intensity=15, windowing_params=(80, 160)):
     """
     Interactive plot for a volume sequence with adjustable sigma_space and sigma_intensity for bilateral filtering.
     
@@ -885,7 +904,7 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
         fig, ax: Matplotlib figure and axis objects
     """
     plt.ion()  # Turn on interactive mode
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
     plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
 
     if windowing_params:
@@ -895,24 +914,17 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
             print(f"Error applying windowing: {e}")
 
     # Original image on the left
-    image_original = ax1.imshow(volume_seq[0, 0], cmap='magma')
+    image_original = ax1.imshow(volume_seq[0, 0], cmap=cmap)
     ax1.set_title(f"{title} - Original")
     plt.colorbar(image_original, ax=ax1)
     ax1.axis('off')
     
-    # SimpleITK filtered image in the middle
-    filtered_image_data_sitk = apply_bilateral_filter_sitk(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
-    image_filtered_sitk = ax2.imshow(filtered_image_data_sitk, cmap='magma')
-    ax2.set_title(f"{title} - SimpleITK Bilateral Filter")
-    plt.colorbar(image_filtered_sitk, ax=ax2)
-    ax2.axis('off')
-
     # Custom filtered image on the right
     filtered_image_data = apply_bilateral_filter(volume_seq[0, 0], sigma_space=initial_sigma_space, sigma_intensity=initial_sigma_intensity)
-    image_filtered = ax3.imshow(filtered_image_data, cmap='magma')
-    ax3.set_title(f"{title} - Custom Bilateral Filter")
-    plt.colorbar(image_filtered, ax=ax3)
-    ax3.axis('off')
+    image_filtered = ax2.imshow(filtered_image_data, cmap=cmap)
+    ax2.set_title(f"{title} - Bilateral Filter")
+    plt.colorbar(image_filtered, ax=ax2)
+    ax2.axis('off')
     
     # Create sliders
     ax_slice_slider = plt.axes([0.15, 0.25, 0.7, 0.03])
@@ -932,11 +944,9 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
         sigma_intensity = sigma_intensity_slider.val
         
         original_data = volume_seq[current_time, current_slice]
-        filtered_data_sitk = apply_bilateral_filter_sitk(original_data, sigma_space, sigma_intensity)
         filtered_data = apply_bilateral_filter(original_data, sigma_space, sigma_intensity)
         
         image_original.set_data(original_data)
-        image_filtered_sitk.set_data(filtered_data_sitk)
         image_filtered.set_data(filtered_data)
 
         fig.canvas.draw_idle()
@@ -949,16 +959,16 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     
     def on_scroll(event):
         if event.inaxes == ax_time_slider:
-            time_slider.set_val(min(time_slider.val + 1, time_slider.valmax))
+            time_slider.set_val(max(min(time_slider.val + event.step, time_slider.valmax), time_slider.valmin))
         elif event.inaxes == ax_slice_slider:
-            slice_slider.set_val(min(slice_slider.val + 1, slice_slider.valmax))
+            slice_slider.set_val(max(min(slice_slider.val + event.step, slice_slider.valmax), slice_slider.valmin))
         elif event.inaxes == ax_sigma_space_slider:
             sigma_space_slider.set_val(min(sigma_space_slider.val + 0.1, sigma_space_slider.valmax))
         elif event.inaxes == ax_sigma_intensity_slider:
             sigma_intensity_slider.set_val(min(sigma_intensity_slider.val + 0.1, sigma_intensity_slider.valmax))
         
     def on_motion(event):
-        if event.inaxes in [ax1, ax2, ax3]:
+        if event.inaxes in [ax1, ax2]:
             plt.gcf().canvas.set_cursor(1)
     
     fig.canvas.mpl_connect('scroll_event', on_scroll)
@@ -967,7 +977,7 @@ def interactive_plot_with_bilateral_filter(volume_seq, title="", show=True, init
     if show:
         plt.show(block=True)
     
-    return fig, (ax1, ax2, ax3)
+    return fig, (ax1, ax2)
 
 
 def overlay_volumes(base_volume, overlay_volume, title=None, show=True):
@@ -1172,7 +1182,7 @@ def make_gifs(ctvol, outprefix, chosen_views):
         imageio.mimsave(outprefix+'_sagittal.gif',images)
         print('\t\tdone with sagittal gif')
 
-def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None):
+def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None, cmap='grey'):
     """
     Render interactive cycling of volume sequences from several folders in a single window
     with different subplots (one per folder). The folders are expected to contain
@@ -1246,7 +1256,7 @@ def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None)
             img_data = apply_window(state["current_volume"][0, 0], *windowing_params)
         else:
             img_data = state["current_volume"][0, 0]
-        image = ax.imshow(img_data, cmap='magma')
+        image = ax.imshow(img_data, cmap=cmap)
         ax.set_title(f"{state['current_title']} ({state['folder']})")
         plt.colorbar(image, ax=ax)
         state["ax"] = ax
@@ -1287,10 +1297,10 @@ def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None)
 
     def on_scroll(event):
         if event.inaxes == ax_time_slider:
-            new_val = min(time_slider.val + time_slider.valstep, time_slider.valmax)
+            new_val = min(time_slider.val + event.step, time_slider.valmax)
             time_slider.set_val(new_val)
         elif event.inaxes == ax_slice_slider:
-            new_val = min(slice_slider.val + slice_slider.valstep, slice_slider.valmax)
+            new_val = min(slice_slider.val + event.step, slice_slider.valmax)
             slice_slider.set_val(new_val)
         fig.canvas.draw_idle()
 
@@ -1342,5 +1352,3 @@ def multi_folder_cycle_iplot_all(folder_list, windowing_params=None, nrows=None)
     plt.show(block=True)
     return fig, axes, folder_states
 
-
-# 0 -> m -
