@@ -10,6 +10,7 @@ from numba import jit
 import SimpleITK as sitk
 from concurrent.futures import ProcessPoolExecutor
 from time import time
+import json
 
 dataset_path = os.path.expanduser('~/Desktop/UniToBrain')
 
@@ -551,7 +552,7 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
                spacing: tuple = (1, 1), multi_res: bool = False, smoothing_sigma: float = 1.0, interpolator=sitk.sitkLinear,
                mask=True, reg_window_min=-100, reg_window_max=300, threshold_min=0, threshold_max=500,
                center_index=None, shrink_factors=[2, 1], smoothing_sigmas=[2, 0],
-               verbose: bool = False):
+               get_transform=False,verbose: bool = False):
     
     Y, Z, X = moving_volume.shape
     
@@ -709,10 +710,14 @@ def register_volume_inplane_weighted(moving_volume: np.ndarray, reference_volume
         # Bring the slice back to its original value range by adding min_pixel_value
         registered_volume[i] = sitk.GetArrayFromImage(registered_slice) + min_value
 
+    if get_transform: # Used in recursive sequence registration
+        return registered_volume, final_transform
     return registered_volume
 
 def rigid_register_volume_sequence(volume_seq: np.ndarray, 
                                    reference_index: int = 2,
+                                   n_recursive: int|None = None,
+                                   get_transform: bool = False,
                                    n_iters: int = 250,
                                    n_samples: int = 3,
                                    lr: float = 0.1,
@@ -725,7 +730,7 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
                                    shrink_factors = [2, 1],
                                    smoothing_sigmas = [2, 0],
                                    verbose: bool = True) -> np.ndarray:
-
+    
     if not (0 <= reference_index < volume_seq.shape[0]):
         raise IndexError(f"Reference index {reference_index} is out of bounds for volume sequence with length {volume_seq.shape[0]}.")
     
@@ -735,6 +740,21 @@ def rigid_register_volume_sequence(volume_seq: np.ndarray,
     # Initialize the output array
     registered_seq = np.empty_like(volume_seq)
     registered_seq[reference_index] = volume_seq[reference_index]
+
+    # if n_recursive is not None:
+    #     sub_seq_len = volume_seq.shape[0] // len(reference_index)
+    #     for pos, ref_idx in enumerate(reference_index):
+    #         start = pos * sub_seq_len
+    #         end = start + sub_seq_len
+    #         r_i = ref_idx - start
+    #         sub_seq = volume_seq[start:end]
+    #         registered_seq[start:end] = rigid_register_volume_sequence(
+    #             volume_seq=sub_seq,
+    #             reference_index=ref_idx,
+    #             get_transform=get_transform,
+    #             verbose=verbose
+    #         )
+            
 
     # Register each volume sequentially
     for i in range(volume_seq.shape[0]):
@@ -904,6 +924,18 @@ def save_all_volumes(scan_size='small', save_path='Experiments/Data'):
         volume_seq = get_volume(folder_path, spatial_downsampling_factor=2, verbose=False)
         save_volume(volume_seq, path)
 
+def quality_filtered(source_path: str='Experiments/PreprocessedData', save_path: str='Experiments/QualityFiltered', screening_file: str='Experiments/scan_screening.json'):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    with open(screening_file, 'r') as f:
+        screening = json.load(f)
+    for name in os.listdir(source_path):
+        scan_id = name.split('.')[0]
+        if scan_id not in screening['exclude'] and scan_id not in screening['re-register']:
+            source = os.path.join(source_path, name)
+            volume_seq = np.load(source)
+            save_volume(volume_seq, os.path.join(save_path, name))
+            
 if __name__ == "__main__":
     # IDs = ['001', '060', '061', '062', '094','096', '097', '101', '104', '105']
     # save_selected_volumes(IDs)
@@ -916,4 +948,5 @@ if __name__ == "__main__":
     #         if os.path.exists(path):
     #             print(f"Volume {folder_path.split('/')[-1]} already exists")
     # sample_volumes(n_samples=10, random_selection=False, first_index=0, scan_size='small', save_path='Experiments/Data3')
-    save_all_volumes(scan_size='small', save_path='Experiments/PreprocessedData')
+    # save_all_volumes(scan_size='small', save_path='Experiments/PreprocessedData')
+    quality_filtered(source_path='Experiments/PreprocessedData', save_path='Experiments/QualityFiltered', screening_file='Experiments/scan_screening.json')
