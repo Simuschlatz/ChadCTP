@@ -14,7 +14,7 @@ from icecream import ic
 import numpy as np
 import os
 
-def render_volume_slices(volume, cmap='grey', figsize=(12, 12)):
+def render_volume_slices(volume, cmap='grey', n_rows=None, ax_size=4, v_min=None, v_max=None):
     """
     Renders all slices of a 3D volume with no gaps between images.
     
@@ -28,21 +28,27 @@ def render_volume_slices(volume, cmap='grey', figsize=(12, 12)):
     - axes: 2D array of matplotlib axes objects
     """
     depth = len(volume)
-    rows = int(np.sqrt(depth))
+    if n_rows is not None:
+        rows = n_rows
+    else:
+        rows = int(np.sqrt(depth))
     cols = int(np.ceil(depth / rows))
-    
+    figsize = (cols * ax_size, rows * ax_size)
     fig, axes = plt.subplots(rows, cols, figsize=figsize)
     fig.subplots_adjust(wspace=0, hspace=0)
-    
+    if v_min is None:
+        v_min = np.min(volume)
+    if v_max is None:
+        v_max = np.max(volume)
     for i, ax in enumerate(axes.flat):
         if i < depth:
-            ax.imshow(volume[i], cmap=cmap, aspect='equal')
+            ax.imshow(volume[i], cmap=cmap, aspect='equal', vmin=v_min, vmax=v_max)
         ax.axis('off')
     
     plt.tight_layout()
     fig.patch.set_facecolor('black')
     plt.show(block=True)
-
+    return fig, axes
 def scroll_through_all_slices(volume_seq: np.ndarray, title="", show=True, cmap='grey'):
     t, y, z, x = volume_seq.shape
     # Reshape the 4D volume sequence into a 3D array
@@ -167,6 +173,7 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
     # Get a sorted list of npy files and filter out volumes already checked.
     all_files = sorted([f for f in os.listdir(data_folder) if f.endswith('.npy')])
     files = [f for f in all_files if os.path.splitext(f)[0] not in json_data["checked"]]
+    # files = [f for f in all_files if os.path.splitext(f)[0] in json_data["exclude"]]
     if not files:
         print("No new volumes to display; all volumes have been checked.")
         return None, None
@@ -262,7 +269,8 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
                 json_data["checked"].append(current_title)
             if current_title not in json_data["re-register"]:
                 json_data["re-register"].append(current_title)
-            
+            if current_title in json_data["exclude"]:
+                json_data["exclude"].remove(current_title)
             # Save JSON data
             with open(json_path, 'w') as f:
                 json.dump(json_data, f, indent=4)
@@ -307,6 +315,10 @@ def interactive_plot_cycle_from_folder(data_folder="Experiments/Data", windowing
             # Add the current volume's title to json_data.
             if current_title not in json_data["checked"]:
                 json_data["checked"].append(current_title)
+            if current_title in json_data["re-register"]:
+                json_data["re-register"].remove(current_title)
+            if current_title in json_data["exclude"]:
+                json_data["exclude"].remove(current_title)
             with open(json_path, 'w') as f:
                 json.dump(json_data, f, indent=4)
             print(f"Saved '{current_title}' to checked list")
@@ -494,8 +506,8 @@ def interactive_plot_with_mask(volume_seq, title="", cmap='grey', show=True, ini
     """Like interactive_plot but shows the mask from get_mask with adjustable min_objects parameter"""
     plt.ion()  # Turn on interactive mode
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 8))
-    plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.9, wspace=0.3)
-    
+    # plt.subplots_adjust(left=0.05, bottom=0.35, right=0.95, top=0.9, wspace=0.0, hspace=0.0)
+    plt.subplots_adjust(wspace=0, hspace=0)
     # Original image on left
     if apply_window:
         image = ax1.imshow(np.clip(volume_seq[0, 0], a_min=-40, a_max=120), cmap=cmap)
@@ -510,9 +522,17 @@ def interactive_plot_with_mask(volume_seq, title="", cmap='grey', show=True, ini
                         remove_small_objects_size=initial_min_objects,
                         structuring_element_dims=(1, 7)
                         )
-    mask_plot = ax2.imshow(mask_img, cmap='binary')
+    
+    binary_cmap = ListedColormap(['black', 'white'])
+    mask_plot = ax2.imshow(mask_img, cmap=binary_cmap)
     ax2.set_title(f"{title} - Brain Mask")
-
+    legend_elements = [
+        plt.Rectangle((0,0), 1, 1, facecolor=binary_cmap(0), label='0 - Non-Brain'),
+        plt.Rectangle((0,0), 1, 1, facecolor=binary_cmap(1), label='1 - Brain', )
+    ]
+    ax2.legend(handles=legend_elements, bbox_to_anchor=(1.0, 1.0),
+              loc='upper right', ncol=1)
+    
     # Masked image on right
     masked_img = volume_seq[0, 0] * mask_img
     if apply_window:
@@ -622,7 +642,9 @@ def interactive_plot_with_3d_mask(volume_seq, title="", show=True,
     cax1 = plt.subplot(gs[1, 0])  # colorbar for original image
     cax3 = plt.subplot(gs[1, 2])  # colorbar for masked image
     
-    plt.subplots_adjust(left=0.05, bottom=0.35, right=0.95, top=0.9, wspace=0.02, hspace=0.01)
+    plt.subplots_adjust(left=0.05, bottom=0.35, right=0.95, top=0.9, wspace=0.0, hspace=0.0)
+    # plt.subplots_adjust(bottom=0.35, wspace=0.0, hspace=0.0)
+    # plt.subplots_adjust(wspace=0, hspace=0)
     
     # Original image on left
     if apply_window:
